@@ -1,6 +1,7 @@
 <?php
+
 session_start();
-require_once '../../db_connect.php';
+include '../../db_connect.php';
 
 if (!isset($_SESSION['user'])) {
     header("Location: ../../login.php");
@@ -8,270 +9,642 @@ if (!isset($_SESSION['user'])) {
 }
 
 $user = $_SESSION['user'];
-$user_id = (int)$user['id'];
-$role = $user['role']; // trainee (client)
+$user_id = $user['id'];
 
-// ===============================
-// Ensure active_status exists
-// ===============================
-$check_status = $conn->query("SHOW COLUMNS FROM users LIKE 'active_status'");
-if ($check_status->num_rows === 0) {
-    $conn->query("ALTER TABLE users ADD active_status ENUM('online','offline','busy') DEFAULT 'offline'");
+// === AJAX endpoint: fetch booked slots for trainer & date ===
+if (isset($_GET['fetch_booked']) && !empty($_GET['trainer_id']) && !empty($_GET['date'])) {
+    $trainer_id = intval($_GET['trainer_id']);
+    $date = $_GET['date'];
+
+    // Use prepared statement to avoid injection
+    $stmt = $conn->prepare("SELECT start_time, end_time FROM appointments WHERE trainer_id = ? AND date = ? AND status NOT IN ('cancelled','declined')");
+    $stmt->bind_param("is", $trainer_id, $date);
+    $stmt->execute();
+    $res = $stmt->get_result();
+
+    $booked = [];
+    while ($r = $res->fetch_assoc()) {
+        // normalize times to "HH:MM:SS" expected format
+        $booked[] = [
+            'start_time' => $r['start_time'],
+            'end_time' => $r['end_time']
+        ];
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode($booked);
+    exit;
 }
 
-// ===============================
-// CLIENT → TRAINER conversations
-// ===============================
-$conversations_query = "
-    SELECT 
-        c.id AS conversation_id,
-        u.id AS opposite_id,
-        CONCAT(u.firstName,' ',u.lastName) AS opposite_name,
-        u.avatar,
-        u.role AS opposite_role,
-        u.active_status,
-        c.last_message,
-        c.last_message_at
-    FROM conversations c
-    JOIN users u 
-      ON u.id = IF(c.user1_id = $user_id, c.user2_id, c.user1_id)
-    WHERE c.user1_id = $user_id 
-       OR c.user2_id = $user_id
-    ORDER BY c.last_message_at DESC, c.id DESC
+// Fetch all appointments of the logged-in client
+$appointments_query = "
+    SELECT a.*, CONCAT(t.firstName, ' ', t.lastName) AS trainer_name
+    FROM appointments a
+    JOIN users t ON a.trainer_id = t.id
+    WHERE a.trainee_id = ?
+    ORDER BY a.date DESC, a.start_time ASC
 ";
+$stmt = $conn->prepare($appointments_query);
+$stmt->bind_param("i", $user_id);
+$stmt->execute();
+$appointments_result = $stmt->get_result();
 
-$conversations_result = $conn->query($conversations_query);
-if (!$conversations_result) {
-    die("Conversations Query Error: " . $conn->error);
+// Fetch available trainers
+$trainers_query = "SELECT id, CONCAT(firstName, ' ', lastName) AS name, role FROM users WHERE role IN ('trainer','trainor') ORDER BY firstName";
+$trainers_result = $conn->query($trainers_query);
+
+// Fetch equipment list (ASSUMPTION: equipment table)
+$equipment_query = "SELECT id, name, model, status FROM equipment ORDER BY name ASC";
+$equipment_result = $conn->query($equipment_query);
+
+// If a specific trainer is selected via GET (e.g., from dashboard)
+$selected_trainer_id = isset($_GET['trainer_id']) ? intval($_GET['trainer_id']) : null;
+$selected_trainer = null;
+if ($selected_trainer_id) {
+    $trainer_query = "SELECT id, CONCAT(firstName, ' ', lastName) AS name, role FROM users WHERE id = ? AND role IN ('trainer','trainor')";
+    $stmt2 = $conn->prepare($trainer_query);
+    $stmt2->bind_param("i", $selected_trainer_id);
+    $stmt2->execute();
+    $selected_trainer_result = $stmt2->get_result();
+    if ($selected_trainer_result->num_rows > 0) {
+        $selected_trainer = $selected_trainer_result->fetch_assoc();
+    }
 }
-
-// ===============================
-// Fetch trainers not yet chatted
-// ===============================
-$users_query = "
-    SELECT 
-        u.id,
-        CONCAT(u.firstName,' ',u.lastName) AS name,
-        u.avatar,
-        u.role,
-        u.active_status
-    FROM users u
-    WHERE u.role = 'trainer'
-      AND u.id != ?
-      AND NOT EXISTS (
-          SELECT 1
-          FROM conversations c
-          WHERE 
-            (c.user1_id = ? AND c.user2_id = u.id)
-            OR
-            (c.user2_id = ? AND c.user1_id = u.id)
-      )
-";
-
-$users_stmt = $conn->prepare($users_query);
-$users_stmt->bind_param("iii", $user_id, $user_id, $user_id);
-$users_stmt->execute();
-$users_result = $users_stmt->get_result();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Chat Support | GymFit</title>
+    <meta charset="UTF-8">
+    <title>Client Schedule | GymFit</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
 
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body { background-color: #f8f9fa; }
+        main { margin-left: 250px; padding: 2rem; min-height: 100vh; background-color: #f9f9f9; }
+        .card { border: none; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .card-header { background: linear-gradient(135deg, #d32f2f, #8b0000); color: white; border-top-left-radius: 10px; border-top-right-radius: 10px; padding: 1rem 1.5rem; }
+        .form-label { font-weight: 500; color: #444; }
+        .table thead { background-color: #f5f5f5; color: #333; }
+        .btn-danger { background-color: #b71c1c; border: none; }
+        .btn-danger:hover { background-color: #9a0007; }
+        .badge { font-size: 0.8rem; }
+        .btn-icon { display: inline-flex; align-items: center; justify-content: center; }
+
+        .selected-trainer-card { background: linear-gradient(135deg, #e3f2fd, #f3e5f5); border-left: 4px solid #b71c1c; border-radius: 8px; }
+
+        /* Time selection styles */
+        .time-section { background: #f8f9fa; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .time-section-header { border-bottom: 2px solid #e9ecef; padding-bottom: 1rem; margin-bottom: 1rem; }
+        .time-slots-container { background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 1rem; max-height: 200px; overflow-y: auto; }
+        .time-slots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+        .time-slot-btn { padding: 8px 12px; border: 2px solid #e9ecef; border-radius: 6px; background: white; color: #495057; font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.2s ease; text-align: center; }
+        .time-slot-btn:hover { border-color: #b71c1c; background: #fff5f5; color: #b71c1c; }
+        .time-slot-btn.selected { background: #b71c1c; border-color: #b71c1c; color: white; }
+        .time-slot-btn:disabled { background: #f8f9fa; color: #6c757d; cursor: not-allowed; opacity: 0.6; }
+        .time-input-feedback { font-size: 0.875rem; margin-top: 0.5rem; }
+        .time-display { font-weight: 600; color: #b71c1c; margin-top: 0.5rem; }
+
+        @media (max-width: 768px) {
+            main { margin-left: 0; padding: 1rem; }
+            .time-slots-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+            .time-section { padding: 1rem; }
+        }
+    </style>
+</head>
+<body>
+<?php include 'includes/navbar.php'; ?>
+
+<div class="d-flex">
+    <?php include 'includes/sidebar.php'; ?>
+    <main style="flex: 1;">
+        <div class="container-fluid">
+            <h3 class="fw-bold mb-4 text-danger"><i class="bi bi-calendar-event"></i> Training Schedule</h3>
+
+            <?php if ($selected_trainer): ?>
+                <div class="alert alert-info selected-trainer-card mb-4">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-person-check-fill me-3 fs-4"></i>
+                        <div>
+                            <h5 class="mb-1">Booking session with: <strong><?= htmlspecialchars($selected_trainer['name']) ?></strong></h5>
+                            <p class="mb-0">You've selected <?= htmlspecialchars($selected_trainer['name']) ?> as your trainer. Fill out the form below to schedule your session.</p>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <div class="row">
+                <div class="col-lg-7">
+                    <!-- Booking Form -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-plus-circle"></i> Book a Training Session</h5>
+                        </div>
+                        <div class="card-body">
+                            <form action="book_session.php" method="POST" id="bookingForm">
+                                <div class="row g-3">
+                                    <!-- Trainer Selection -->
+                                    <div class="col-md-6">
+                                        <label class="form-label">Trainer</label>
+                                        <?php if ($selected_trainer): ?>
+                                            <div class="form-control bg-light">
+                                                <strong><?= htmlspecialchars($selected_trainer['name']) ?> (<?= $selected_trainer['role'] ?>)</strong>
+                                            </div>
+                                            <input type="hidden" name="trainer_id" value="<?= $selected_trainer['id'] ?>">
+                                        <?php else: ?>
+                                            <select name="trainer_id" class="form-select" required>
+                                                <option value="">Select Trainer</option>
+                                                <?php
+                                                $trainers_result->data_seek(0);
+                                                while ($t = $trainers_result->fetch_assoc()):
+                                                ?>
+                                                    <option value="<?= $t['id'] ?>"><?= htmlspecialchars($t['name']) ?> (<?= $t['role'] ?>)</option>
+                                                <?php endwhile; ?>
+                                            </select>
+                                        <?php endif; ?>
+                                    </div>
+
+                                    <!-- Date -->
+                                    <div class="col-md-6">
+                                        <label class="form-label">Date</label>
+                                        <input type="date" name="date" id="sessionDate" class="form-control" required min="<?= date('Y-m-d') ?>">
+                                    </div>
+
+                                    <!-- Training Regime -->
+                                    <div class="col-md-6">
+                                        <label class="form-label">Training Regime</label>
+                                        <select name="training_regime" class="form-select" required>
+                                            <option value="">Select Regime</option>
+                                            <option value="full_body">Full Body</option>
+                                            <option value="upper_body">Upper Body</option>
+                                            <option value="lower_body">Lower Body</option>
+                                            <option value="cardio">Cardio</option>
+                                            <option value="strength">Strength</option>
+                                            <option value="flexibility">Flexibility</option>
+                                            <option value="hiit">HIIT</option>
+                                            <option value="recovery">Recovery</option>
+                                        </select>
+                                    </div>
+
+                                    <!-- Equipment Dropdown (ASSUMPTION: equipment table exists) -->
+                                    <div class="col-md-6">
+                                        <label class="form-label">Equipment</label>
+                                        <select name="equipment_id" class="form-select" required>
+                                            <option value="">Select Equipment</option>
+                                            <?php
+                                            if ($equipment_result && $equipment_result->num_rows > 0) {
+                                                $equipment_result->data_seek(0);
+                                                while ($eq = $equipment_result->fetch_assoc()):
+                                                    $status = strtolower($eq['status']);
+                                                    $disabled = ($status !== 'available') ? 'disabled' : '';
+                                                    ?>
+                                                    <option value="<?= $eq['id'] ?>" <?= $disabled ?>><?= htmlspecialchars($eq['name']) ?> <?= $disabled ? " (Unavailable)" : "" ?></option>
+                                                <?php endwhile;
+                                            } else { ?>
+                                                <option value="">No equipment found</option>
+                                            <?php } ?>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- Time section -->
+                                <div class="time-section mt-4">
+                                    <div class="time-section-header">
+                                        <h6 class="mb-0 text-danger"><i class="bi bi-clock"></i> Session Time</h6>
+                                        <small class="text-muted">Select your preferred start and end times</small>
+                                    </div>
+
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label fw-semibold">Start Time <span class="text-danger">*</span></label>
+                                            <div class="time-slots-container">
+                                                <div class="time-slots-grid" id="startTimeSlots">
+                                                    <!-- Start time slots generated by JS -->
+                                                </div>
+                                            </div>
+                                            <input type="hidden" name="start_time" id="selectedStartTime" required>
+                                            <div class="time-input-feedback text-muted">
+                                                <span id="startTimeDisplay">No time selected</span>
+                                            </div>
+                                            <small class="text-muted">Available: 7:00 AM - 8:00 PM (30-min intervals)</small>
+                                        </div>
+
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label fw-semibold">End Time <span class="text-danger">*</span></label>
+                                            <div class="time-slots-container">
+                                                <div class="time-slots-grid" id="endTimeSlots">
+                                                    <div class="time-slot-btn" style="grid-column: 1 / -1; background: none; border: none; color: #6c757d;">
+                                                        <i class="bi bi-info-circle"></i> Please select start time first
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <input type="hidden" name="end_time" id="selectedEndTime" required>
+                                            <div class="time-input-feedback text-muted">
+                                                <span id="endTimeDisplay">No time selected</span>
+                                            </div>
+                                            <small class="text-muted" id="endTimeHelp">End time will be available after selecting start time</small>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Duration & Notes -->
+                                <div class="row">
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label">Session Duration (Days)</label>
+                                        <select name="session_days" class="form-select" required>
+                                            <option value="">Select Duration</option>
+                                            <?php for ($i = 1; $i <= 5; $i++): ?>
+                                                <option value="<?= $i ?>"><?= $i ?> <?= $i > 1 ? 'Days' : 'Day' ?></option>
+                                            <?php endfor; ?>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-9 mb-3">
+                                        <label class="form-label">Notes</label>
+                                        <textarea name="notes" claaass="form-control" rows="2" placeholder="Any special instructions or preferences..."></textarea>
+                                    </div>
+                                </div>
+
+                                <div class="d-flex gap-2">
+                                    <button type="submit" class="btn btn-danger px-4">
+                                        <i class="bi bi-save"></i> Book Session
+                                    </button>
+                                    <?php if ($selected_trainer): ?>
+                                        <a href="client_schedule.php" class="btn btn-outline-secondary px-4">
+                                            <i class="bi bi-people"></i> View All Trainers
+                                        </a>
+                                    <?php endif; ?>
+                                    <button type="reset" class="btn btn-outline-danger px-4 ms-auto">
+                                        <i class="bi bi-arrow-clockwise"></i> Reset Form
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Appointments Table -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-list-ul"></i> Your Training Sessions</h5>
+                        </div>
+                        <div class="card-body">
+                            <?php if ($appointments_result->num_rows > 0): ?>
+                                <div class="table-responsive">
+                                    <table class="table table-striped align-middle text-center">
+                                        <thead class="table-light">
+<tr>
+    <th>Date</th>
+    <th>Trainer</th>
+    <th>Time</th>
+    <th>Regime</th>
+    <th>Duration</th>
+    <th>Status</th>
+    <th>Payment</th>
+    <th>Created At</th>
+    <th>Action</th>
+</tr>
+</thead>
+<tbody>
+<?php
+$appointments_result->data_seek(0);
+while ($a = $appointments_result->fetch_assoc()):
+    $status = strtolower($a['status']);
+    $badgeClass = match ($status) {
+        'pending', 'accepted' => 'primary', // Active
+        'completed' => 'success',
+        'cancelled', 'declined' => 'secondary',
+        default => 'light'
+    };
+    $statusText = in_array($status, ['pending','accepted']) ? 'Active' : ucfirst($a['status']);
+?>
+<tr>
+    <td><?= date("M d, Y", strtotime($a['date'])) ?></td>
+    <td><?= htmlspecialchars($a['trainer_name']) ?></td>
+    <td><?= date("h:i A", strtotime($a['start_time'])) ?> - <?= date("h:i A", strtotime($a['end_time'])) ?></td>
+    <td><?= ucfirst(str_replace('_', ' ', $a['training_regime'])) ?></td>
+    <td><?= $a['session_days'] ?? '1' ?> Day(s)</td>
+    <td><span class="badge bg-<?= $badgeClass ?>"><?= $statusText ?></span></td>
+    <td><span class="badge bg-<?= $a['is_paid'] ? 'success' : 'danger' ?>"><?= $a['is_paid'] ? 'Paid' : 'Unpaid' ?></span></td>
+    <td><?= date("M d, Y h:i A", strtotime($a['created_at'] ?? $a['date'])) ?></td>
+    <td>
+        <button type="button" class="btn btn-sm btn-outline-success btn-icon" data-bs-toggle="modal" data-bs-target="#updatePaymentModal<?= $a['id'] ?>" <?= $a['is_paid'] ? 'disabled' : '' ?>>
+            <i class="bi bi-cash-coin"></i>
+        </button>
+        <?php if (!in_array($status, ['completed', 'cancelled', 'declined'])): ?>
+            <a href="cancel_session.php?id=<?= $a['id'] ?>" class="btn btn-sm btn-outline-danger btn-icon ms-2">
+                <i class="bi bi-x-circle"></i>
+            </a>
+        <?php endif; ?>
+    </td>
+</tr>
+<?php endwhile; ?>
+</tbody>
+
+                                    </table>
+                                </div>
+                            <?php else: ?>
+                                <div class="text-center py-4">
+                                    <i class="bi bi-calendar-x text-muted" style="font-size: 3rem;"></i>
+                                    <p class="text-muted mt-3 mb-0">No booked sessions yet.</p>
+                                    <small class="text-muted">Book your first training session using the form above.</small>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right column: Equipment list + Quick info -->
+                <div class="col-lg-5">
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-gear-fill"></i> Equipment List</h5>
+                        </div>
+                        <div class="card-body">
+                            <?php if ($equipment_result && $equipment_result->num_rows > 0): ?>
+                                <div class="list-group">
+                                    <?php
+                                    $equipment_result->data_seek(0);
+                                    while ($eq = $equipment_result->fetch_assoc()):
+                                        $st = strtolower($eq['status']);
+                                        $badge = $st === 'available' ? 'success' : ($st === 'in_use' ? 'warning' : 'secondary');
+                                        ?>
+                                        <div class="list-group-item d-flex justify-content-between align-items-start">
+                                            <div>
+                                                <div class="fw-bold"><?= htmlspecialchars($eq['name']) ?></div>
+                                                <div class="small text-muted"><?= htmlspecialchars($eq['model']) ?></div>
+                                            </div>
+                                            <div class="text-end">
+                                                <span class="badge bg-<?= $badge ?>"><?= ucfirst($eq['status']) ?></span>
+                                            </div>
+                                        </div>
+                                    <?php endwhile; ?>
+                                </div>
+                            <?php else: ?>
+                                <p class="mb-0 text-muted">No equipment registered yet.</p>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <div class="card shadow-sm">
+                        <div class="card-header">
+                            <h6 class="mb-0"><i class="bi bi-info-circle"></i> Notes</h6>
+                        </div>
+                        <div class="card-body">
+                            <ul class="small">
+                                <li>Select a trainer and date to see available time slots. Booked time slots will be disabled automatically.</li>
+                                <li>Equipment availability is shown. Unavailable equipment cannot be selected.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+</div>
+
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-<style>
-/* 🔒 DESIGN UNCHANGED */
-body { background:#f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-main { margin-top:56px; margin-left:260px; height:calc(100vh - 56px); overflow-y:auto; padding:20px; }
-.chat-container { height:calc(100vh - 150px); }
-.chat-box { height:calc(100% - 140px); overflow-y:auto; background:#fff; padding:15px; border-radius:0 0 8px 8px; }
-.message { padding:12px 16px; border-radius:18px; margin-bottom:12px; max-width:70%; word-wrap:break-word; }
-.sent { background:linear-gradient(135deg,#dc3545,#c82333); color:white; margin-left:auto; border-bottom-right-radius:4px; }
-.received { background:#f1f3f5; color:#333; border-bottom-left-radius:4px; }
-.conversation-item { padding:12px; cursor:pointer; border-radius:8px; border-left:3px solid transparent; display:flex; align-items:center; }
-.conversation-item:hover, .conversation-item.active { background:#fff5f5; border-left-color:#dc3545; }
-.trainer-avatar { width:45px; height:45px; border-radius:50%; object-fit:cover; }
-.conversation-list { height:400px; overflow-y:auto; }
-.typing-indicator { font-style:italic; color:#6c757d; font-size:0.9rem; }
-</style>
-</head>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    // Generate time slots from 7:00 to 20:00 (8:00 PM) in 30-minute intervals
+    function generateTimeSlots() {
+        const slots = [];
+        for (let hour = 7; hour <= 20; hour++) {
+            for (let minute = 0; minute < 60; minute += 30) {
+                // stop at 20:00 (8:00 PM)
+                if (hour === 20 && minute > 0) break;
+                const hh = hour.toString().padStart(2, '0');
+                const mm = minute.toString().padStart(2, '0');
+                const value = `${hh}:${mm}:00`; // keep seconds for comparison with DB
+                const display = formatTimeForDisplay(`${hh}:${mm}`);
+                slots.push({ value, display });
+            }
+        }
+        return slots;
+    }
 
-<body>
+    function formatTimeForDisplay(timeString) {
+        const [hours, minutes] = timeString.split(':');
+        const hour = parseInt(hours);
+        const ampm = hour >= 12 ? 'PM' : 'AM';
+        const displayHour = hour % 12 || 12;
+        return `${displayHour}:${minutes} ${ampm}`;
+    }
 
-<?php include 'includes/navbar.php'; ?>
-<?php include 'includes/sidebar.php'; ?>
+    const timeSlots = generateTimeSlots();
+    let bookedTimes = []; // from server
 
-<main>
-<div class="container-fluid">
+    // utility to get trainer id (either hidden input or select)
+    function getSelectedTrainerId() {
+        const hidden = document.querySelector('input[name="trainer_id"][type="hidden"]');
+        if (hidden) return hidden.value;
+        const sel = document.querySelector('select[name="trainer_id"]');
+        return sel ? sel.value : '';
+    }
 
-<h3 class="fw-bold mb-4 text-danger">
-    <i class="bi bi-chat-dots me-2"></i>Chat Support
-</h3>
+    // Fetch booked slots via AJAX when trainer or date changes
+    const dateInput = document.getElementById('sessionDate');
+    const trainerSelect = document.querySelector('select[name="trainer_id"]');
 
-<div class="row chat-container">
+    (dateInput) && dateInput.addEventListener('change', fetchBookedTimes);
+    (trainerSelect) && trainerSelect.addEventListener('change', fetchBookedTimes);
 
-<!-- LEFT -->
-<div class="col-md-4">
-<div class="card shadow-sm h-100">
+    async function fetchBookedTimes() {
+        const trainer_id = getSelectedTrainerId();
+        const date = dateInput.value;
+        if (!trainer_id || !date) {
+            bookedTimes = [];
+            renderTimeSlots('startTimeSlots', timeSlots);
+            document.getElementById('endTimeSlots').innerHTML = '<div class="time-slot-btn" style="grid-column:1 / -1; background:none; border:none; color:#6c757d;"><i class="bi bi-info-circle"></i> Please select start time first</div>';
+            return;
+        }
 
-<div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
-    <h6 class="mb-0">
-        <i class="bi bi-people-fill me-2"></i>Your Conversations
-        <span class="badge bg-light text-danger ms-2"><?= $conversations_result->num_rows ?></span>
-    </h6>
-</div>
-
-<div class="card-body p-0">
-<div class="conversation-list">
-<ul class="list-group list-group-flush">
-<?php while ($conv = $conversations_result->fetch_assoc()):
-    $avatar = "../../assets/default-avatar.png";
-    if (!empty($conv['avatar'])) {
-        if (file_exists("../../uploads/avatars/".$conv['avatar'])) {
-            $avatar = "../../uploads/avatars/".$conv['avatar'];
+        try {
+            const resp = await fetch(`client_schedule.php?fetch_booked=1&trainer_id=${encodeURIComponent(trainer_id)}&date=${encodeURIComponent(date)}`);
+            if (!resp.ok) throw new Error('Failed to fetch booked times');
+            bookedTimes = await resp.json();
+            renderTimeSlots('startTimeSlots', timeSlots);
+            // reset end slots
+            document.getElementById('endTimeSlots').innerHTML = '<div class="time-slot-btn" style="grid-column:1 / -1; background:none; border:none; color:#6c757d;"><i class="bi bi-info-circle"></i> Please select start time first</div>';
+        } catch (err) {
+            console.error(err);
+            bookedTimes = [];
+            renderTimeSlots('startTimeSlots', timeSlots);
         }
     }
-?>
-<li class="list-group-item conversation-item"
-    onclick="startConversation(<?= $conv['conversation_id'] ?>, <?= $conv['opposite_id'] ?>, '<?= addslashes($conv['opposite_name']) ?>', '<?= $avatar ?>', 'Trainer')">
-    <img src="<?= $avatar ?>" class="trainer-avatar me-3">
-    <div>
-        <strong><?= htmlspecialchars($conv['opposite_name']) ?></strong>
-        <small class="text-muted d-block">Trainer</small>
-        <small class="text-muted"><?= htmlspecialchars($conv['last_message'] ?? '') ?></small>
-    </div>
-</li>
-<?php endwhile; ?>
-</ul>
-</div>
-</div>
 
-<!-- Start New -->
-<div class="card-footer bg-light">
-<h6 class="text-danger mb-3"><i class="bi bi-person-plus me-2"></i>Start New Chat</h6>
-
-<?php while ($u = $users_result->fetch_assoc()):
-    $avatar = "../../assets/default-avatar.png";
-    if (!empty($u['avatar']) && file_exists("../../uploads/avatars/".$u['avatar'])) {
-        $avatar = "../../uploads/avatars/".$u['avatar'];
-    }
-?>
-<div class="d-flex align-items-center mb-3 p-2 bg-white rounded">
-    <img src="<?= $avatar ?>" width="40" height="40" class="rounded-circle me-3">
-    <div class="flex-grow-1">
-        <strong><?= htmlspecialchars($u['name']) ?></strong>
-        <small class="text-muted d-block">Trainer</small>
-    </div>
-    <button class="btn btn-sm btn-outline-danger"
-        onclick="startConversation(null, <?= $u['id'] ?>, '<?= addslashes($u['name']) ?>', '<?= $avatar ?>', 'Trainer')">
-        <i class="bi bi-chat-left"></i>
-    </button>
-</div>
-<?php endwhile; ?>
-
-</div>
-</div>
-</div>
-
-<!-- RIGHT -->
-<div class="col-md-8">
-<div class="card shadow-sm h-100">
-
-<div class="chat-header d-flex align-items-center p-3">
-    <img id="chatAvatar" src="../../assets/default-avatar.png" width="50" height="50" class="rounded-circle me-3">
-    <div>
-        <h6 id="chatName" class="fw-bold m-0">Select a conversation</h6>
-        <small id="chatRole" class="text-muted">Trainer</small>
-    </div>
-</div>
-
-<div id="chatBox" class="chat-box text-center text-muted py-5">
-    Select a conversation to start messaging
-</div>
-
-<div class="card-footer bg-light">
-<form id="sendMessageForm" class="d-flex gap-2">
-    <input type="hidden" id="conversation_id">
-    <input type="text" id="messageInput" class="form-control" disabled required>
-    <button class="btn btn-danger" disabled><i class="bi bi-send"></i></button>
-</form>
-</div>
-
-</div>
-</div>
-
-</div>
-</div>
-</main>
-
-<script>
-let conversationId = null;
-let myUserId = <?= $user_id ?>;
-
-function startConversation(convId, userId, name, avatar) {
-    document.getElementById("chatName").textContent = name;
-    document.getElementById("chatAvatar").src = avatar;
-    document.getElementById("messageInput").disabled = false;
-    document.querySelector("#sendMessageForm button").disabled = false;
-
-    if (convId) {
-        conversationId = convId;
-        loadMessages();
-        return;
+    function isTimeBooked(slotValue) {
+        // slotValue format "HH:MM:SS"
+        // bookedTimes entries: {start_time: "HH:MM:SS", end_time: "HH:MM:SS"}
+        // A slot is considered booked if slotValue >= start_time AND slotValue < end_time
+        for (const b of bookedTimes) {
+            if (slotValue >= b.start_time && slotValue < b.end_time) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    fetch("ajax/start_conversation.php", {
-        method: "POST",
-        headers: {"Content-Type":"application/x-www-form-urlencoded"},
-        body: `user2_id=${userId}`
-    })
-    .then(res => res.json())
-    .then(data => {
-        conversationId = data.conversation_id;
-        loadMessages();
-        location.reload();
-    });
-}
+    function renderTimeSlots(containerId, slots, selectedTime = '') {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        container.innerHTML = '';
+        const grid = document.createDocumentFragment();
 
-function loadMessages() {
-    if (!conversationId) return;
-    fetch("ajax/get_messages.php?conversation_id=" + conversationId)
-        .then(res => res.json())
-        .then(data => {
-            const box = document.getElementById("chatBox");
-            box.innerHTML = "";
-            data.forEach(m => {
-                const div = document.createElement("div");
-                div.className = "message " + (m.sender_id == myUserId ? "sent" : "received");
-                div.innerHTML = m.message;
-                box.appendChild(div);
+        slots.forEach(slot => {
+            const isBooked = isTimeBooked(slot.value);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'time-slot-btn' + (selectedTime === slot.value ? ' selected' : '');
+            btn.textContent = slot.display;
+            btn.dataset.time = slot.value;
+            btn.disabled = isBooked;
+
+            if (isBooked) {
+                btn.style.background = '#f1f1f1';
+                btn.style.color = '#888';
+                btn.style.borderColor = '#ddd';
+                btn.title = 'Booked';
+            }
+
+            btn.addEventListener('click', function () {
+                if (btn.disabled) return;
+                // deselect siblings
+                container.querySelectorAll('.time-slot-btn').forEach(b => b.classList.remove('selected'));
+                btn.classList.add('selected');
+
+                if (containerId === 'startTimeSlots') {
+                    document.getElementById('selectedStartTime').value = slot.value;
+                    document.getElementById('startTimeDisplay').textContent = 'Selected: ' + slot.display;
+                    document.getElementById('startTimeDisplay').className = 'time-input-feedback text-success';
+                    updateEndTimeSlots(slot.value);
+                } else {
+                    document.getElementById('selectedEndTime').value = slot.value;
+                    document.getElementById('endTimeDisplay').textContent = 'Selected: ' + slot.display;
+                    document.getElementById('endTimeDisplay').className = 'time-input-feedback text-success';
+                }
             });
-            box.scrollTop = box.scrollHeight;
+
+            grid.appendChild(btn);
         });
-}
 
-document.getElementById("sendMessageForm").addEventListener("submit", e => {
-    e.preventDefault();
-    const msg = messageInput.value.trim();
-    if (!msg) return;
-    fetch("ajax/send_message.php", {
-        method: "POST",
-        headers: {"Content-Type":"application/x-www-form-urlencoded"},
-        body: `conversation_id=${conversationId}&message=${encodeURIComponent(msg)}`
-    }).then(() => {
-        messageInput.value = "";
-        loadMessages();
+        container.appendChild(grid);
+    }
+
+    function updateEndTimeSlots(startTimeValue) {
+        // startTimeValue is "HH:MM:SS"
+        // end slots are those strictly after startTimeValue
+        const startIndex = timeSlots.findIndex(s => s.value === startTimeValue);
+        let available = [];
+        if (startIndex !== -1) {
+            available = timeSlots.slice(startIndex + 1);
+            // additionally filter out end slots that are within booked ranges, or if the range from start->end overlaps a booked period
+            // Simpler approach: disable any end slot where any time between start and that end crosses a booked interval start
+            // For accuracy server-side validation in book_session.php is required.
+        }
+
+        if (available.length === 0) {
+            document.getElementById('endTimeSlots').innerHTML = '<div class="time-slot-btn" style="grid-column:1 / -1; background:none; border:none; color:#6c757d;"><i class="bi bi-exclamation-circle"></i> No available end times</div>';
+            return;
+        }
+
+        // Render and disable individual end slots if they themselves are booked,
+        // and additionally ensure end > start
+        const container = document.getElementById('endTimeSlots');
+        container.innerHTML = '';
+        const frag = document.createDocumentFragment();
+
+        available.forEach(slot => {
+            // for an end slot to be allowed, the full interval [start, end) must not intersect any booked interval
+            const isInvalid = bookedTimes.some(b => {
+                // overlap if start < b.end_time AND end > b.start_time
+                return (startTimeValue < b.end_time) && (slot.value > b.start_time);
+            });
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'time-slot-btn';
+            btn.textContent = slot.display;
+            btn.dataset.time = slot.value;
+            btn.disabled = isInvalid;
+
+            if (isInvalid) {
+                btn.style.background = '#f1f1f1';
+                btn.style.color = '#888';
+                btn.style.borderColor = '#ddd';
+                btn.title = 'Conflicts with existing booking';
+            }
+
+            btn.addEventListener('click', function () {
+                if (btn.disabled) return;
+                // deselect siblings
+                container.querySelectorAll('.time-slot-btn').forEach(b => b.classList.remove('selected'));
+                btn.classList.add('selected');
+
+                document.getElementById('selectedEndTime').value = slot.value;
+                document.getElementById('endTimeDisplay').textContent = 'Selected: ' + slot.display;
+                document.getElementById('endTimeDisplay').className = 'time-input-feedback text-success';
+            });
+
+            frag.appendChild(btn);
+        });
+
+        container.appendChild(frag);
+        document.getElementById('endTimeHelp').textContent = 'Available end times (must be after start)';
+        document.getElementById('selectedEndTime').value = '';
+        document.getElementById('endTimeDisplay').textContent = 'No time selected';
+        document.getElementById('endTimeDisplay').className = 'time-input-feedback text-muted';
+    }
+
+    // Initialize start time slots (no trainer/date selected yet => all enabled visually)
+    renderTimeSlots('startTimeSlots', timeSlots);
+
+    // Form validation: ensure start and end are set and end > start
+    document.getElementById('bookingForm').addEventListener('submit', function (e) {
+        const start = document.getElementById('selectedStartTime').value;
+        const end = document.getElementById('selectedEndTime').value;
+        if (!start) {
+            e.preventDefault();
+            Swal.fire({ icon: 'error', title: 'Missing Start Time', text: 'Please select a start time for your session', confirmButtonColor: '#b71c1c' });
+            return;
+        }
+        if (!end) {
+            e.preventDefault();
+            Swal.fire({ icon: 'error', title: 'Missing End Time', text: 'Please select an end time for your session', confirmButtonColor: '#b71c1c' });
+            return;
+        }
+        if (end <= start) {
+            e.preventDefault();
+            Swal.fire({ icon: 'error', title: 'Invalid Time Selection', text: 'End time must be after start time', confirmButtonColor: '#b71c1c' });
+            return;
+        }
+        // NOTE: server-side double-booking validation MUST be implemented in book_session.php
     });
-});
 
-setInterval(loadMessages, 1500);
+    // Reset handler - clear selections and re-render
+    document.getElementById('bookingForm').addEventListener('reset', function () {
+        setTimeout(() => {
+            document.getElementById('selectedStartTime').value = '';
+            document.getElementById('selectedEndTime').value = '';
+            document.getElementById('startTimeDisplay').textContent = 'No time selected';
+            document.getElementById('startTimeDisplay').className = 'time-input-feedback text-muted';
+            document.getElementById('endTimeDisplay').textContent = 'No time selected';
+            document.getElementById('endTimeDisplay').className = 'time-input-feedback text-muted';
+            renderTimeSlots('startTimeSlots', timeSlots);
+            document.getElementById('endTimeSlots').innerHTML = '<div class="time-slot-btn" style="grid-column:1 / -1; background:none; border:none; color:#6c757d;"><i class="bi bi-info-circle"></i> Please select start time first</div>';
+        }, 50);
+    });
+
+    // If page loaded with preselected trainer/date (e.g., selected trainer), fetch booked times
+    if (dateInput && dateInput.value && getSelectedTrainerId()) {
+        fetchBookedTimes();
+    }
+});
 </script>
 
 </body>

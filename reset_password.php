@@ -121,7 +121,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 </div>
                 
                 <button type="submit" class="btn btn-reset w-100 py-2">
-                    <i class="fa fa-sync-alt me-1"></i> Reset Password
+                    <i class="fa fa-sync-alt me-1"></i> Reset Password  
                 </button>
             </form>
         <?php endif; ?>

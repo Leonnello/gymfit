@@ -16,15 +16,14 @@ if (!$conversation_id) {
     exit('Missing conversation ID');
 }
 
-// ✅ Secure query using prepared statement - only show non-deleted messages or messages deleted by others
+// ✅ Secure query using prepared statement
 $stmt = $conn->prepare("
-    SELECT m.id, m.sender_id, m.message, m.created_at, m.is_deleted, m.deleted_by
+    SELECT m.id, m.sender_id, m.message, m.created_at
     FROM messages m 
     WHERE m.conversation_id = ? 
-    AND (m.is_deleted = FALSE OR (m.is_deleted = TRUE AND m.deleted_by != ?))
     ORDER BY m.created_at ASC
 ");
-$stmt->bind_param("ii", $conversation_id, $user_id);
+$stmt->bind_param("i", $conversation_id);
 $stmt->execute();
 $result = $stmt->get_result();
 
@@ -39,33 +38,14 @@ if ($result->num_rows === 0) {
 while ($row = $result->fetch_assoc()) {
     $is_sent = ($row['sender_id'] == $user_id);
     $message_class = $is_sent ? 'sent' : 'received';
-    $is_deleted = $row['is_deleted'];
-    
-    if ($is_deleted) {
-        $message_class .= ' deleted';
-    }
 
     echo '<div class="d-flex ' . ($is_sent ? 'justify-content-end' : 'justify-content-start') . ' mb-3">';
     echo '<div class="message ' . $message_class . ' position-relative">';
     
-    if ($is_deleted) {
-        echo '<div class="d-flex align-items-center">';
-        echo '<i class="bi bi-trash text-muted me-2"></i>';
-        echo '<span class="fst-italic">This message was deleted</span>';
-        echo '</div>';
-    } else {
-        echo '<div class="message-content">' . htmlspecialchars($row['message']) . '</div>';
-    }
+    echo '<div class="message-content">' . htmlspecialchars($row['message']) . '</div>';
     
     echo '<div class="message-time d-flex align-items-center justify-content-between mt-1">';
     echo '<span>' . date("h:i A", strtotime($row['created_at'])) . '</span>';
-    
-    // Show delete button only for user's own non-deleted messages
-    if ($is_sent && !$is_deleted) {
-        echo '<button class="delete-btn ms-2" onclick="deleteMessage(' . $row['id'] . ')">';
-        echo '<i class="bi bi-trash"></i>';
-        echo '</button>';
-    }
     
     echo '</div>';
     echo '</div>';

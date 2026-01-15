@@ -34,7 +34,6 @@ $conversations_query = "
     JOIN users u 
       ON u.id = IF(c.user1_id = $user_id, c.user2_id, c.user1_id)
     WHERE (c.user1_id = $user_id OR c.user2_id = $user_id)
-      AND c.is_archived = 0
     ORDER BY c.last_message_at DESC, c.id DESC
 ";
 
