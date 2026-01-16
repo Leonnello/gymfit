@@ -142,6 +142,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
               <p><span class="info-label"><i class="bi bi-activity"></i> Training Regime:</span><br> <?= ucfirst(str_replace('_', ' ', $appointment['training_regime'])) ?></p>
               <p><span class="info-label"><i class="bi bi-list-task"></i> Session Type:</span><br> <?= htmlspecialchars($appointment['type'] ?? 'N/A') ?></p>
               <p><span class="info-label"><i class="bi bi-chat-left-text-fill"></i> Notes:</span><br> <?= htmlspecialchars($appointment['notes'] ?? 'No notes provided') ?></p>
+              <p><span class="info-label"><i class="bi bi-credit-card"></i> Session Cost:</span><br> 
+                <strong class="text-danger">₱<?= number_format($appointment['amount'] ?? 0, 2) ?></strong>
+              </p>
               <p><span class="info-label"><i class="bi bi-check2-circle"></i> Status:</span><br>
                 <span class="badge bg-<?= 
                   $appointment['status'] == 'Pending' ? 'warning text-dark' : 

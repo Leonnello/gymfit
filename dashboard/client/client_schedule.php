@@ -108,10 +108,23 @@ if ($selected_trainer_id) {
         .time-input-feedback { font-size: 0.875rem; margin-top: 0.5rem; }
         .time-display { font-weight: 600; color: #b71c1c; margin-top: 0.5rem; }
 
+        /* Receipt modal styles */
+        .receipt-modal { max-width: 500px; }
+        .receipt-container { background: white; border-radius: 8px; padding: 1.5rem; }
+        .receipt-header { border-bottom: 2px solid #e9ecef; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+        .receipt-header h5 { color: #b71c1c; }
+        .receipt-details { font-size: 0.95rem; }
+        .receipt-row { display: flex; justify-content: space-between; margin-bottom: 1rem; align-items: center; }
+        .receipt-label { color: #6c757d; font-weight: 500; }
+        .receipt-value { color: #333; text-align: right; word-break: break-word; }
+        .receipt-total { background: #f8f9fa; padding: 1rem; border-radius: 6px; margin-top: 1rem; border: 2px solid #e9ecef; }
+        .receipt-price { color: #b71c1c; font-size: 1.2rem; }
+
         @media (max-width: 768px) {
             main { margin-left: 0; padding: 1rem; }
             .time-slots-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
             .time-section { padding: 1rem; }
+            .receipt-modal { max-width: 90vw; }
         }
     </style>
 </head>
@@ -263,9 +276,44 @@ if ($selected_trainer_id) {
                                     </div>
                                     <div class="col-md-9 mb-3">
                                         <label class="form-label">Notes</label>
-                                        <textarea name="notes" claaass="form-control" rows="2" placeholder="Any special instructions or preferences..."></textarea>
+                                        <textarea name="notes" class="form-control" rows="2" placeholder="Any special instructions or preferences..."></textarea>
                                     </div>
                                 </div>
+
+                                <!-- Price Display -->
+                                <div class="alert alert-info mb-3" id="priceSection" style="display: none;">
+                                    <div class="row mb-3">
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Training Type:</small>
+                                            <div class="h6 text-danger"><span id="regimeType">-</span></div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Base Rate:</small>
+                                            <div class="h6 text-danger"><span id="basePrice">₱0.00</span></div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Duration:</small>
+                                            <div class="h6 text-danger"><span id="duration">0</span> hrs</div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Days:</small>
+                                            <div class="h6 text-danger"><span id="sessionDays">1</span></div>
+                                        </div>
+                                    </div>
+                                    <hr class="my-2">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <small class="text-muted">Cost per Session:</small>
+                                            <div class="h6 text-danger"><span id="pricePerSession">₱0.00</span></div>
+                                        </div>
+                                        <div class="col-md-6 text-end">
+                                            <strong>Total Cost:</strong>
+                                            <h5 class="text-danger mb-0"><span id="totalPrice">₱0.00</span></h5>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <input type="hidden" name="amount" id="amountInput" value="0">
 
                                 <div class="d-flex gap-2">
                                     <button type="submit" class="btn btn-danger px-4">
@@ -300,6 +348,7 @@ if ($selected_trainer_id) {
     <th>Time</th>
     <th>Regime</th>
     <th>Duration</th>
+    <th>Amount</th>
     <th>Status</th>
     <th>Payment</th>
     <th>Created At</th>
@@ -325,6 +374,7 @@ while ($a = $appointments_result->fetch_assoc()):
     <td><?= date("h:i A", strtotime($a['start_time'])) ?> - <?= date("h:i A", strtotime($a['end_time'])) ?></td>
     <td><?= ucfirst(str_replace('_', ' ', $a['training_regime'])) ?></td>
     <td><?= $a['session_days'] ?? '1' ?> Day(s)</td>
+    <td><strong>₱<?= number_format(floatval($a['amount']), 2) ?></strong></td>
     <td><span class="badge bg-<?= $badgeClass ?>"><?= $statusText ?></span></td>
     <td><span class="badge bg-<?= $a['is_paid'] ? 'success' : 'danger' ?>"><?= $a['is_paid'] ? 'Paid' : 'Unpaid' ?></span></td>
     <td><?= date("M d, Y h:i A", strtotime($a['created_at'] ?? $a['date'])) ?></td>
@@ -523,10 +573,18 @@ document.addEventListener("DOMContentLoaded", function () {
                     document.getElementById('startTimeDisplay').textContent = 'Selected: ' + slot.display;
                     document.getElementById('startTimeDisplay').className = 'time-input-feedback text-success';
                     updateEndTimeSlots(slot.value);
+                    // Clear end time and price when start time changes
+                    document.getElementById('selectedEndTime').value = '';
+                    document.getElementById('endTimeDisplay').textContent = 'No time selected';
+                    document.getElementById('endTimeDisplay').className = 'time-input-feedback text-muted';
+                    // Trigger price calculation after a small delay
+                    setTimeout(calculatePrice, 100);
                 } else {
                     document.getElementById('selectedEndTime').value = slot.value;
                     document.getElementById('endTimeDisplay').textContent = 'Selected: ' + slot.display;
                     document.getElementById('endTimeDisplay').className = 'time-input-feedback text-success';
+                    // Trigger price calculation when end time is selected
+                    calculatePrice();
                 }
             });
 
@@ -589,6 +647,9 @@ document.addEventListener("DOMContentLoaded", function () {
                 document.getElementById('selectedEndTime').value = slot.value;
                 document.getElementById('endTimeDisplay').textContent = 'Selected: ' + slot.display;
                 document.getElementById('endTimeDisplay').className = 'time-input-feedback text-success';
+                
+                // Calculate price when end time is selected
+                calculatePrice();
             });
 
             frag.appendChild(btn);
@@ -604,7 +665,134 @@ document.addEventListener("DOMContentLoaded", function () {
     // Initialize start time slots (no trainer/date selected yet => all enabled visually)
     renderTimeSlots('startTimeSlots', timeSlots);
 
+    // Calculate price when trainer, start time, or end time changes
+    async function calculatePrice() {
+        const trainer_id = getSelectedTrainerId();
+        const start_time = document.getElementById('selectedStartTime').value;
+        const end_time = document.getElementById('selectedEndTime').value;
+        const training_regime = document.querySelector('select[name="training_regime"]').value;
+        const session_days = document.querySelector('select[name="session_days"]').value;
+        const priceSection = document.getElementById('priceSection');
+
+        // Check if all required fields are filled
+        if (!trainer_id || !start_time || !end_time || !training_regime || !session_days) {
+            // Show "Form incomplete" message
+            priceSection.innerHTML = `
+                <div class="alert alert-warning mb-0">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    <strong>Form Incomplete</strong> - Please fill in all required fields to see pricing
+                </div>
+            `;
+            priceSection.style.display = 'block';
+            document.getElementById('amountInput').value = '0';
+            return;
+        }
+
+        try {
+            const formData = new FormData();
+            formData.append('training_regime', training_regime);
+            formData.append('start_time', start_time);
+            formData.append('end_time', end_time);
+            formData.append('session_days', session_days);
+
+            const response = await fetch('ajax/calculate_price.php', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) throw new Error('Failed to calculate price');
+            const data = await response.json();
+
+            if (data.success) {
+                const regimeNames = {
+                    'full_body': 'Full Body',
+                    'upper_body': 'Upper Body',
+                    'lower_body': 'Lower Body',
+                    'cardio': 'Cardio',
+                    'strength': 'Strength',
+                    'flexibility': 'Flexibility',
+                    'hiit': 'HIIT',
+                    'recovery': 'Recovery'
+                };
+
+                const priceHTML = `
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <small class="text-muted">Training Type:</small>
+                            <div class="h6 text-danger"><span id="regimeType">${regimeNames[data.regime] || data.regime}</span></div>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Base Rate:</small>
+                            <div class="h6 text-danger"><span id="basePrice">₱${parseFloat(data.base_price).toFixed(2)}</span></div>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Duration:</small>
+                            <div class="h6 text-danger"><span id="duration">${data.duration.toFixed(1)}</span> hrs</div>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Days:</small>
+                            <div class="h6 text-danger"><span id="sessionDays">${data.session_days}</span></div>
+                        </div>
+                    </div>
+                    <hr class="my-2">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <small class="text-muted">Cost per Session:</small>
+                            <div class="h6 text-danger"><span id="pricePerSession">₱${parseFloat(data.price_per_session).toFixed(2)}</span></div>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <strong>Total Cost:</strong>
+                            <h5 class="text-danger mb-0"><span id="totalPrice">${data.formatted_price}</span></h5>
+                        </div>
+                    </div>
+                `;
+
+                priceSection.innerHTML = priceHTML;
+                document.getElementById('amountInput').value = data.total_price;
+                priceSection.style.display = 'block';
+            }
+        } catch (err) {
+            console.error('Price calculation error:', err);
+            priceSection.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> Error calculating price</div>`;
+            priceSection.style.display = 'block';
+        }
+    }
+
+    // Listen to changes on start/end times and trainer
+    document.addEventListener('DOMContentLoaded', function() {
+        // This is already in DOMContentLoaded, so we can use event delegation
+    });
+
+    // Add event listeners for price calculation
+    const originalRenderTimeSlots = renderTimeSlots;
+    const startTimeContainer = document.getElementById('startTimeSlots');
+    const endTimeContainer = document.getElementById('endTimeSlots');
+
+    // Override the renderTimeSlots function to add event listeners
+    window.calculatePriceOnChange = calculatePrice;
+
+    // Listen for changes
+    document.addEventListener('change', function(e) {
+        if (e.target.name === 'trainer_id') {
+            setTimeout(calculatePrice, 500);
+        }
+        if (e.target.name === 'training_regime' || e.target.name === 'session_days') {
+            setTimeout(calculatePrice, 100);
+        }
+    });
+
+    // Modify the start time click handler to recalculate
+    const originalStartClick = function() {
+        setTimeout(calculatePrice, 100);
+    };
+
+    // For end time selection
+    const originalEndClick = function() {
+        setTimeout(calculatePrice, 100);
+    };
+
     // Form validation: ensure start and end are set and end > start
+    // Show confirmation modal before submission
     document.getElementById('bookingForm').addEventListener('submit', function (e) {
         const start = document.getElementById('selectedStartTime').value;
         const end = document.getElementById('selectedEndTime').value;
@@ -623,8 +811,119 @@ document.addEventListener("DOMContentLoaded", function () {
             Swal.fire({ icon: 'error', title: 'Invalid Time Selection', text: 'End time must be after start time', confirmButtonColor: '#b71c1c' });
             return;
         }
-        // NOTE: server-side double-booking validation MUST be implemented in book_session.php
+        
+        // Prevent default and show confirmation modal
+        e.preventDefault();
+        showBookingConfirmation();
     });
+
+    // Show booking confirmation modal
+    function showBookingConfirmation() {
+        // Get trainer info (could be hidden input or select)
+        const trainerHidden = document.querySelector('input[name="trainer_id"][type="hidden"]');
+        const trainerSelect = document.querySelector('select[name="trainer_id"]');
+        
+        let trainerId = '';
+        let trainerName = '';
+        
+        if (trainerHidden) {
+            trainerId = trainerHidden.value;
+            trainerName = trainerHidden.parentElement.querySelector('strong')?.textContent || 'Selected Trainer';
+        } else if (trainerSelect) {
+            trainerId = trainerSelect.value;
+            trainerName = trainerSelect.options[trainerSelect.selectedIndex].text;
+        }
+        
+        const date = document.querySelector('input[name="date"]').value;
+        const startTime = document.getElementById('selectedStartTime').value;
+        const endTime = document.getElementById('selectedEndTime').value;
+        const regime = document.querySelector('select[name="training_regime"]').value;
+        const sessionDays = document.querySelector('select[name="session_days"]').value;
+        const totalPrice = document.getElementById('totalPrice').textContent;
+        const notes = document.querySelector('textarea[name="notes"]').value;
+
+        // Calculate duration for display
+        const start = new Date(`2000-01-01 ${startTime}`);
+        const end = new Date(`2000-01-01 ${endTime}`);
+        const durationMs = end - start;
+        const durationHours = durationMs / (1000 * 60 * 60);
+        const durationMin = (durationHours % 1) * 60;
+        let durationText = '';
+        if (durationHours >= 1) {
+            durationText = `${Math.floor(durationHours)} hr${Math.floor(durationHours) > 1 ? 's' : ''}`;
+            if (durationMin > 0) {
+                durationText += ` ${Math.round(durationMin)} min`;
+            }
+        } else {
+            durationText = `${Math.round(durationMin)} min`;
+        }
+
+        const regimeLabel = document.getElementById('training_regime').options[document.getElementById('training_regime').selectedIndex].text;
+        const formattedDate = new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+
+        const confirmHtml = `
+            <div class="receipt-container">
+                <div class="receipt-header text-center mb-4">
+                    <h5 class="mb-0"><i class="bi bi-receipt"></i> Booking Receipt</h5>
+                    <small class="text-muted">Please review your booking details</small>
+                </div>
+                <div class="receipt-details">
+                    <div class="receipt-row">
+                        <span class="receipt-label">Trainer:</span>
+                        <span class="receipt-value"><strong>${trainerName}</strong></span>
+                    </div>
+                    <div class="receipt-row">
+                        <span class="receipt-label">Date:</span>
+                        <span class="receipt-value"><strong>${formattedDate}</strong></span>
+                    </div>
+                    <div class="receipt-row">
+                        <span class="receipt-label">Time:</span>
+                        <span class="receipt-value"><strong>${startTime} - ${endTime}</strong></span>
+                    </div>
+                    <div class="receipt-row">
+                        <span class="receipt-label">Duration:</span>
+                        <span class="receipt-value"><strong>${durationText}</strong></span>
+                    </div>
+                    <div class="receipt-row">
+                        <span class="receipt-label">Training Type:</span>
+                        <span class="receipt-value"><strong>${regimeLabel}</strong></span>
+                    </div>
+                    <div class="receipt-row">
+                        <span class="receipt-label">Number of Days:</span>
+                        <span class="receipt-value"><strong>${sessionDays} ${sessionDays > 1 ? 'Days' : 'Day'}</strong></span>
+                    </div>
+                    ${notes ? `<div class="receipt-row">
+                        <span class="receipt-label">Notes:</span>
+                        <span class="receipt-value"><em>${notes}</em></span>
+                    </div>` : ''}
+                    <hr class="my-3">
+                    <div class="receipt-row receipt-total">
+                        <span class="receipt-label"><strong>Total Cost:</strong></span>
+                        <span class="receipt-value receipt-price"><strong>${totalPrice}</strong></span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        Swal.fire({
+            title: 'Confirm Booking',
+            html: confirmHtml,
+            icon: 'info',
+            showCancelButton: true,
+            confirmButtonText: 'Confirm & Book',
+            cancelButtonText: 'Cancel',
+            confirmButtonColor: '#b71c1c',
+            cancelButtonColor: '#6c757d',
+            customClass: {
+                popup: 'receipt-modal'
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                // Submit the form
+                document.getElementById('bookingForm').submit();
+            }
+        });
+    };
 
     // Reset handler - clear selections and re-render
     document.getElementById('bookingForm').addEventListener('reset', function () {
@@ -644,6 +943,9 @@ document.addEventListener("DOMContentLoaded", function () {
     if (dateInput && dateInput.value && getSelectedTrainerId()) {
         fetchBookedTimes();
     }
+    
+    // Trigger price calculation on page load if all fields are available
+    setTimeout(calculatePrice, 500);
 });
 </script>
 
