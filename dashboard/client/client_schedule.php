@@ -695,13 +695,36 @@ document.addEventListener("DOMContentLoaded", function () {
             formData.append('end_time', end_time);
             formData.append('session_days', session_days);
 
+            console.log('Sending to calculate_price.php:', {training_regime, start_time, end_time, session_days});
+
             const response = await fetch('ajax/calculate_price.php', {
                 method: 'POST',
                 body: formData
             });
 
-            if (!response.ok) throw new Error('Failed to calculate price');
+            if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to calculate price`);
             const data = await response.json();
+
+            console.log('Response from calculate_price.php:', data);
+
+            // Check if there was an error in the response
+            if (data.error) {
+                const errorMsg = data.error;
+                priceSection.innerHTML = `
+                    <div class="alert alert-danger mb-0 d-flex align-items-center gap-2">
+                        <i class="bi bi-exclamation-circle-fill" data-bs-toggle="tooltip" data-bs-title="${errorMsg}"></i>
+                        <span>Error calculating price</span>
+                    </div>
+                `;
+                priceSection.style.display = 'block';
+                // Initialize tooltip for this new element
+                const tooltipElement = priceSection.querySelector('[data-bs-toggle="tooltip"]');
+                if (tooltipElement && typeof bootstrap !== 'undefined') {
+                    new bootstrap.Tooltip(tooltipElement);
+                }
+                document.getElementById('amountInput').value = '0';
+                return;
+            }
 
             if (data.success) {
                 const regimeNames = {
@@ -750,11 +773,25 @@ document.addEventListener("DOMContentLoaded", function () {
                 priceSection.innerHTML = priceHTML;
                 document.getElementById('amountInput').value = data.total_price;
                 priceSection.style.display = 'block';
+            } else {
+                throw new Error('Invalid response from server');
             }
         } catch (err) {
             console.error('Price calculation error:', err);
-            priceSection.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> Error calculating price</div>`;
+            const errorMsg = err.message;
+            priceSection.innerHTML = `
+                <div class="alert alert-danger mb-0 d-flex align-items-center gap-2">
+                    <i class="bi bi-exclamation-circle-fill" data-bs-toggle="tooltip" data-bs-title="${errorMsg}"></i>
+                    <span>Error calculating price</span>
+                </div>
+            `;
             priceSection.style.display = 'block';
+            // Initialize tooltip for this new element
+            const tooltipElement = priceSection.querySelector('[data-bs-toggle="tooltip"]');
+            if (tooltipElement && typeof bootstrap !== 'undefined') {
+                new bootstrap.Tooltip(tooltipElement);
+            }
+            document.getElementById('amountInput').value = '0';
         }
     }
 
@@ -793,32 +830,41 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // Form validation: ensure start and end are set and end > start
     // Show confirmation modal before submission
-    document.getElementById('bookingForm').addEventListener('submit', function (e) {
-        const start = document.getElementById('selectedStartTime').value;
-        const end = document.getElementById('selectedEndTime').value;
-        if (!start) {
+    const bookingFormElement = document.getElementById('bookingForm');
+    if (bookingFormElement) {
+        bookingFormElement.addEventListener('submit', function (e) {
+            console.log('Book form submitted!');
             e.preventDefault();
-            Swal.fire({ icon: 'error', title: 'Missing Start Time', text: 'Please select a start time for your session', confirmButtonColor: '#b71c1c' });
-            return;
-        }
-        if (!end) {
-            e.preventDefault();
-            Swal.fire({ icon: 'error', title: 'Missing End Time', text: 'Please select an end time for your session', confirmButtonColor: '#b71c1c' });
-            return;
-        }
-        if (end <= start) {
-            e.preventDefault();
-            Swal.fire({ icon: 'error', title: 'Invalid Time Selection', text: 'End time must be after start time', confirmButtonColor: '#b71c1c' });
-            return;
-        }
-        
-        // Prevent default and show confirmation modal
-        e.preventDefault();
-        showBookingConfirmation();
-    });
+            
+            const start = document.getElementById('selectedStartTime').value;
+            const end = document.getElementById('selectedEndTime').value;
+            
+            console.log('Start time:', start, 'End time:', end);
+            
+            if (!start) {
+                Swal.fire({ icon: 'error', title: 'Missing Start Time', text: 'Please select a start time for your session', confirmButtonColor: '#b71c1c' });
+                return;
+            }
+            if (!end) {
+                Swal.fire({ icon: 'error', title: 'Missing End Time', text: 'Please select an end time for your session', confirmButtonColor: '#b71c1c' });
+                return;
+            }
+            if (end <= start) {
+                Swal.fire({ icon: 'error', title: 'Invalid Time Selection', text: 'End time must be after start time', confirmButtonColor: '#b71c1c' });
+                return;
+            }
+            
+            // Show confirmation modal
+            showBookingConfirmation();
+        });
+    } else {
+        console.error('Booking form not found!');
+    }
 
     // Show booking confirmation modal
     function showBookingConfirmation() {
+        console.log('showBookingConfirmation called');
+        
         // Get trainer info (could be hidden input or select)
         const trainerHidden = document.querySelector('input[name="trainer_id"][type="hidden"]');
         const trainerSelect = document.querySelector('select[name="trainer_id"]');
@@ -842,6 +888,8 @@ document.addEventListener("DOMContentLoaded", function () {
         const totalPrice = document.getElementById('totalPrice').textContent;
         const notes = document.querySelector('textarea[name="notes"]').value;
 
+        console.log({trainerId, trainerName, date, startTime, endTime, regime, sessionDays, totalPrice});
+        
         // Calculate duration for display
         const start = new Date(`2000-01-01 ${startTime}`);
         const end = new Date(`2000-01-01 ${endTime}`);
@@ -858,7 +906,7 @@ document.addEventListener("DOMContentLoaded", function () {
             durationText = `${Math.round(durationMin)} min`;
         }
 
-        const regimeLabel = document.getElementById('training_regime').options[document.getElementById('training_regime').selectedIndex].text;
+        const regimeLabel = document.querySelector('select[name="training_regime"]').options[document.querySelector('select[name="training_regime"]').selectedIndex].text;
         const formattedDate = new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
 
         const confirmHtml = `

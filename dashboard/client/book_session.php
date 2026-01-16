@@ -14,14 +14,14 @@ $user_id = $_SESSION['user']['id'];
 function calculateSessionPrice($regime, $start_time, $end_time, $session_days) {
   // Philippine gym pricing - realistic rates
   $regimePrices = [
-    'full_body' => 900,      // ₱900 per session
-    'upper_body' => 750,     // ₱750 per session
-    'lower_body' => 750,     // ₱750 per session
-    'cardio' => 600,         // ₱600 per session
-    'strength' => 850,       // ₱850 per session
-    'flexibility' => 500,    // ₱500 per session
-    'hiit' => 800,           // ₱800 per session
-    'recovery' => 600        // ₱600 per session
+    'full_body' => 150,      // ₱150 per session
+    'upper_body' => 120,     // ₱120 per session
+    'lower_body' => 120,     // ₱120 per session
+    'cardio' => 100,         // ₱100 per session
+    'strength' => 140,       // ₱140 per session
+    'flexibility' => 80,     // ₱80 per session
+    'hiit' => 130,           // ₱130 per session
+    'recovery' => 100        // ₱100 per session
   ];
 
   // Get base price for regime (default 750 if not found)
