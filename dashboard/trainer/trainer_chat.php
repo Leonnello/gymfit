@@ -96,6 +96,7 @@ $users_result = $users_stmt->get_result();
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 
 <style>
 body { background:#f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -273,6 +274,92 @@ $other_id = $conv['opposite_id'];
 <script>
 let conversationId = null;
 let myUserId = <?= $user_id ?>;
+let socket = null;
+let typingTimeout = null;
+let useSocket = false; // Will be set to true if Socket.IO connects
+
+// Initialize Socket.IO connection with fallback to AJAX
+function initializeSocket() {
+    // Check if Socket.IO is available
+    if (typeof io === 'undefined') {
+        console.warn('⚠️ Socket.IO not loaded, using AJAX polling');
+        useSocket = false;
+        return;
+    }
+
+    fetch("ajax/get_socket_auth.php")
+        .then(res => res.json())
+        .then(auth => {
+            console.log("🔌 Attempting to connect to WebSocket server at http://localhost:3000...");
+            
+            socket = io('http://localhost:3000', {
+                auth: {
+                    user_id: auth.user_id,
+                    token: auth.token
+                },
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000,
+                reconnectionAttempts: 5,
+                transports: ['websocket', 'polling']
+            });
+
+            // Connection established
+            socket.on('connect', () => {
+                console.log('✅ Connected to chat server - LIVE MODE ACTIVE');
+                useSocket = true;
+                if (document.getElementById('chatBox')) {
+                    document.getElementById('chatBox').classList.remove('opacity-50');
+                }
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error('❌ Connection error:', error);
+                useSocket = false;
+                console.log('⚠️ Falling back to AJAX polling mode');
+            });
+
+            // Receive new messages
+            socket.on('new_message', (data) => {
+                console.log('📨 New message received:', data);
+                if (data.conversation_id === conversationId) {
+                    appendMessage(data);
+                    scrollToBottom();
+                }
+            });
+
+            // User typing indicator
+            socket.on('user_typing', (data) => {
+                if (data.typing && data.user_id !== myUserId) {
+                    document.getElementById("typingIndicator").textContent = "typing...";
+                } else {
+                    document.getElementById("typingIndicator").textContent = "";
+                }
+            });
+
+            // User online/offline
+            socket.on('user_online', (data) => {
+                console.log('👤 User ' + data.user_id + ' is online');
+            });
+
+            socket.on('user_offline', (data) => {
+                console.log('👤 User ' + data.user_id + ' is offline');
+            });
+
+            socket.on('disconnect', () => {
+                console.warn('⚠️ Disconnected from chat server');
+                useSocket = false;
+                console.log('📊 Using AJAX polling mode');
+                if (document.getElementById('chatBox')) {
+                    document.getElementById('chatBox').classList.add('opacity-50');
+                }
+            });
+        })
+        .catch(err => {
+            console.error('Failed to get auth:', err);
+            useSocket = false;
+        });
+}
 
 /* =========================
    START CONVERSATION
@@ -290,6 +377,10 @@ window.startConversation = function (convId, userId, name, avatar, role) {
         document.getElementById("conversation_id").value = conversationId;
         document.getElementById("chatBox").innerHTML = "";
         loadMessages();
+        socket.emit('join_chat', {
+            user_id: myUserId,
+            conversation_id: conversationId
+        });
         return;
     }
 
@@ -304,6 +395,10 @@ window.startConversation = function (convId, userId, name, avatar, role) {
         document.getElementById("conversation_id").value = conversationId;
         document.getElementById("chatBox").innerHTML = "";
         loadMessages();
+        socket.emit('join_chat', {
+            user_id: myUserId,
+            conversation_id: conversationId
+        });
         addConversationToList(conversationId, userId, name, avatar, role);
     });
 };
@@ -326,21 +421,46 @@ window.loadMessages = function () {
             }
 
             data.forEach(msg => {
-                let div = document.createElement("div");
-                div.className = "message " + (msg.sender_id == myUserId ? "sent" : "received");
-                div.innerHTML = `
-    <div>${msg.message}</div>
-    <small style="font-size:0.7rem;opacity:0.7;">
-        ${formatTime(msg.created_at)}
-    </small>
-`;
-
-                box.appendChild(div);
+                appendMessage(msg);
             });
 
-            box.scrollTop = box.scrollHeight;
+            scrollToBottom();
         });
 };
+
+/* APPEND MESSAGE TO CHAT BOX */
+function appendMessage(msg) {
+    let box = document.getElementById("chatBox");
+    
+    // Remove "no messages" placeholder
+    if (box.innerHTML.includes("No messages yet")) {
+        box.innerHTML = "";
+    }
+
+    let div = document.createElement("div");
+    div.className = "message " + (msg.sender_id == myUserId ? "sent" : "received");
+    div.innerHTML = `<div>${escapeHtml(msg.message)}</div>
+                     <small style="font-size:0.7rem;opacity:0.7;">${formatTime(msg.created_at)}</small>`;
+    box.appendChild(div);
+}
+
+/* ESCAPE HTML */
+function escapeHtml(text) {
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, m => map[m]);
+}
+
+/* SCROLL TO BOTTOM */
+function scrollToBottom() {
+    let box = document.getElementById("chatBox");
+    box.scrollTop = box.scrollHeight;
+}
 
 /* =========================
    SEND MESSAGE
@@ -351,22 +471,87 @@ document.getElementById("sendMessageForm").addEventListener("submit", function (
     let input = document.getElementById("messageInput");
     let message = input.value.trim();
 
-    if (!message || !conversationId) return;
+    if (!message || !conversationId) {
+        console.warn("⚠️ Message or conversation ID missing");
+        return;
+    }
 
-    fetch("ajax/send_message.php", {
-        method: "POST",
-        headers: {"Content-Type":"application/x-www-form-urlencoded"},
-        body: `conversation_id=${conversationId}&message=${encodeURIComponent(message)}`
-    }).then(() => {
-        input.value = "";
-        loadMessages();
-    });
+    console.log("📤 Sending message - Mode:", useSocket ? "WebSocket" : "AJAX");
+
+    // Optimistic UI update - show message immediately
+    const tempMessage = {
+        id: 'temp_' + Date.now(),
+        conversation_id: conversationId,
+        sender_id: myUserId,
+        message: message,
+        created_at: new Date().toISOString()
+    };
+    appendMessage(tempMessage);
+    scrollToBottom();
+
+    // Clear input
+    input.value = "";
+
+    // Send via Socket or AJAX
+    if (useSocket && socket && socket.connected) {
+        // WebSocket mode (real-time)
+        console.log("⚡ Using WebSocket");
+        socket.emit('send_message', {
+            conversation_id: conversationId,
+            sender_id: myUserId,
+            message: message
+        }, (response) => {
+            if (response?.success) {
+                console.log("✅ Message saved via WebSocket");
+            } else {
+                console.error("❌ WebSocket error:", response);
+            }
+        });
+    } else {
+        // AJAX mode (polling)
+        console.log("📊 Using AJAX polling");
+        fetch("ajax/send_message.php", {
+            method: "POST",
+            headers: {"Content-Type":"application/x-www-form-urlencoded"},
+            body: `conversation_id=${conversationId}&message=${encodeURIComponent(message)}`
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                console.log("✅ Message saved via AJAX");
+                // Refresh messages after 500ms
+                setTimeout(() => loadMessages(), 500);
+            } else {
+                console.error("❌ AJAX error:", data);
+            }
+        })
+        .catch(err => {
+            console.error("❌ AJAX request failed:", err);
+        });
+    }
 });
 
 /* =========================
-   AUTO REFRESH
+   TYPING INDICATOR
 ========================= */
-setInterval(loadMessages, 1500);
+document.getElementById("messageInput").addEventListener("input", function() {
+    if (!socket || !conversationId) return;
+    
+    socket.emit('typing', {
+        conversation_id: conversationId,
+        user_id: myUserId,
+        typing: true
+    });
+
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+        socket.emit('typing', {
+            conversation_id: conversationId,
+            user_id: myUserId,
+            typing: false
+        });
+    }, 1000);
+});
 
 /* =========================
    ADD CONVERSATION
@@ -405,6 +590,28 @@ function formatTime(datetime) {
         minute: '2-digit'
     });
 }
+
+// Initialize socket connection on page load
+document.addEventListener('DOMContentLoaded', () => {
+    initializeSocket();
+    
+    // Fallback polling - every 2 seconds check for new messages if not using WebSocket
+    setInterval(() => {
+        if (!useSocket && conversationId) {
+            loadMessages();
+        }
+    }, 2000);
+});
+
+// Clean up on page unload
+window.addEventListener('beforeunload', () => {
+    if (conversationId && socket) {
+        socket.emit('leave_chat', {
+            user_id: myUserId,
+            conversation_id: conversationId
+        });
+    }
+});
 
 </script>
 

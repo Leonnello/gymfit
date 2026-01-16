@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Diagnostics</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px 20px; }
+        .container { max-width: 600px; }
+        .status-card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .status-title { font-size: 18px; font-weight: bold; margin-bottom: 15px; }
+        .status-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
+        .status-item:last-child { border-bottom: none; }
+        .badge-success { background: #28a745; }
+        .badge-danger { background: #dc3545; }
+        .badge-warning { background: #ffc107; }
+        .console { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px; max-height: 300px; overflow-y: auto; margin-top: 20px; }
+        .console .log { margin: 5px 0; }
+        .console .success { color: #4ec9b0; }
+        .console .error { color: #f48771; }
+        .console .warning { color: #dcdcaa; }
+        .console .info { color: #9cdcfe; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="mb-4">🔧 GymFit Chat Diagnostics</h1>
+
+        <div id="statusContainer"></div>
+
+        <div class="status-card mt-4">
+            <div class="status-title">📋 Console Output</div>
+            <div id="console" class="console"></div>
+        </div>
+
+        <div class="alert alert-info mt-4">
+            <strong>Need Help?</strong><br>
+            1. Start the chat server: <code>npm start</code> in the <code>chat-server</code> folder<br>
+            2. Refresh this page<br>
+            3. Check all indicators are green
+        </div>
+    </div>
+
+    <script>
+        const consoleLogs = [];
+
+        function log(message, type = 'info') {
+            console.log(message);
+            consoleLogs.push({ message, type });
+            updateConsole();
+        }
+
+        function updateConsole() {
+            const consolDiv = document.getElementById('console');
+            consolDiv.innerHTML = consoleLogs.map(item => 
+                `<div class="log"><span class="${item.type}">${item.type.toUpperCase()}:</span> ${item.message}</div>`
+            ).join('');
+            consolDiv.scrollTop = consolDiv.scrollHeight;
+        }
+
+        function addStatus(title, items) {
+            const container = document.getElementById('statusContainer');
+            const card = document.createElement('div');
+            card.className = 'status-card';
+            card.innerHTML = `
+                <div class="status-title">${title}</div>
+                ${items.map(item => `
+                    <div class="status-item">
+                        <span>${item.label}</span>
+                        <span><span class="badge ${item.status === 'success' ? 'badge-success' : item.status === 'warning' ? 'badge-warning' : 'badge-danger'}">${item.value}</span></span>
+                    </div>
+                `).join('')}
+            `;
+            container.appendChild(card);
+        }
+
+        async function runDiagnostics() {
+            log('Starting diagnostics...', 'info');
+
+            try {
+                // Check chat server
+                log('Checking chat server...', 'info');
+                const serverResponse = await fetch('http://localhost:3000', { mode: 'no-cors' })
+                    .catch(() => ({ status: 'error' }));
+                
+                if (serverResponse.status !== undefined && serverResponse.status !== 0) {
+                    log('✓ Chat server is accessible', 'success');
+                    addStatus('🖥️ Chat Server', [
+                        { label: 'Status', value: 'Running', status: 'success' }
+                    ]);
+                } else {
+                    log('✗ Chat server is NOT accessible on port 3000', 'error');
+                    addStatus('🖥️ Chat Server', [
+                        { label: 'Status', value: 'Offline', status: 'danger' }
+                    ]);
+                }
+            } catch (e) {
+                log('✗ Error checking server: ' + e.message, 'error');
+            }
+
+            // Check PHP diagnostics
+            try {
+                log('Checking PHP backend...', 'info');
+                const response = await fetch('ajax/diagnose.php');
+                const data = await response.json();
+
+                log('✓ PHP backend is responding', 'success');
+
+                const dbStatus = data.database.status === 'connected' ? 'success' : 'danger';
+                const serverStatus = data.server.status === 'running' ? 'success' : 'danger';
+
+                addStatus('🗄️ Database', [
+                    { label: 'Connection', value: data.database.status === 'connected' ? 'Connected' : data.database.status, status: dbStatus },
+                    { label: 'Messages Table', value: data.database.messages_table, status: data.database.messages_table === 'yes' ? 'success' : 'danger' },
+                    { label: 'Conversations Table', value: data.database.conversations_table, status: data.database.conversations_table === 'yes' ? 'success' : 'danger' }
+                ]);
+
+                addStatus('📡 Node.js Server', [
+                    { label: 'Status', value: data.server.status === 'running' ? 'Running' : 'Offline', status: serverStatus }
+                ]);
+
+                if (data.session.user_logged_in === 'yes') {
+                    log('✓ User session is active (ID: ' + data.session.user_id + ')', 'success');
+                    addStatus('👤 Session', [
+                        { label: 'Logged In', value: 'Yes', status: 'success' },
+                        { label: 'User ID', value: data.session.user_id, status: 'success' }
+                    ]);
+                }
+            } catch (e) {
+                log('✗ Error checking PHP backend: ' + e.message, 'error');
+            }
+
+            log('Diagnostics complete!', 'success');
+        }
+
+        // Run diagnostics on page load
+        document.addEventListener('DOMContentLoaded', runDiagnostics);
+    </script>
+</body>
+</html>
