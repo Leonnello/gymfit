@@ -379,7 +379,10 @@ while ($a = $appointments_result->fetch_assoc()):
     <td><span class="badge bg-<?= $a['is_paid'] ? 'success' : 'danger' ?>"><?= $a['is_paid'] ? 'Paid' : 'Unpaid' ?></span></td>
     <td><?= date("M d, Y h:i A", strtotime($a['created_at'] ?? $a['date'])) ?></td>
     <td>
-        <button type="button" class="btn btn-sm btn-outline-success btn-icon" data-bs-toggle="modal" data-bs-target="#updatePaymentModal<?= $a['id'] ?>" <?= $a['is_paid'] ? 'disabled' : '' ?>>
+        <?php 
+        $canPay = !$a['is_paid'] && !in_array($status, ['completed', 'cancelled', 'declined']);
+        ?>
+        <button type="button" class="btn btn-sm btn-outline-success btn-icon" data-bs-toggle="modal" data-bs-target="#updatePaymentModal<?= $a['id'] ?>" <?= !$canPay ? 'disabled' : '' ?> title="<?= !$canPay ? 'Cannot pay for this session' : 'Pay for this session' ?>">
             <i class="bi bi-cash-coin"></i>
         </button>
         <?php if (!in_array($status, ['completed', 'cancelled', 'declined'])): ?>
@@ -393,6 +396,48 @@ while ($a = $appointments_result->fetch_assoc()):
 </tbody>
 
                                     </table>
+
+                                    <!-- Payment Modals for each appointment -->
+                                    <?php
+                                    $appointments_result->data_seek(0);
+                                    while ($a = $appointments_result->fetch_assoc()):
+                                    ?>
+                                    <div class="modal fade" id="updatePaymentModal<?= $a['id'] ?>" tabindex="-1" aria-labelledby="updatePaymentLabel<?= $a['id'] ?>" aria-hidden="true">
+                                        <div class="modal-dialog">
+                                            <div class="modal-content">
+                                                <div class="modal-header bg-danger text-white">
+                                                    <h5 class="modal-title" id="updatePaymentLabel<?= $a['id'] ?>">Payment for Session</h5>
+                                                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                </div>
+                                                <div class="modal-body">
+                                                    <p><strong>Trainer:</strong> <?= htmlspecialchars($a['trainer_name']) ?></p>
+                                                    <p><strong>Date:</strong> <?= date("M d, Y", strtotime($a['date'])) ?></p>
+                                                    <p><strong>Time:</strong> <?= date("h:i A", strtotime($a['start_time'])) ?> - <?= date("h:i A", strtotime($a['end_time'])) ?></p>
+                                                    <p><strong>Training Type:</strong> <?= ucfirst(str_replace('_', ' ', $a['training_regime'])) ?></p>
+                                                    <hr>
+                                                    <form action="update_payment.php" method="POST">
+                                                        <input type="hidden" name="appointment_id" value="<?= $a['id'] ?>">
+                                                        <div class="mb-3">
+                                                            <label for="paymentAmount<?= $a['id'] ?>" class="form-label">Amount to Pay</label>
+                                                            <div class="input-group">
+                                                                <span class="input-group-text">₱</span>
+                                                                <input type="number" class="form-control" id="paymentAmount<?= $a['id'] ?>" name="amount" value="<?= floatval($a['amount']) ?>" step="0.01" readonly>
+                                                            </div>
+                                                            <small class="text-muted">Amount is fixed based on your booking</small>
+                                                        </div>
+                                                        <div class="mb-3">
+                                                            <p class="text-muted"><strong>Status:</strong> <span class="badge bg-<?= $a['is_paid'] ? 'success' : 'danger' ?>"><?= $a['is_paid'] ? 'Already Paid' : 'Pending Payment' ?></span></p>
+                                                        </div>
+                                                        <button type="submit" class="btn btn-danger w-100" <?= ($a['is_paid'] || in_array(strtolower($a['status']), ['completed', 'cancelled', 'declined'])) ? 'disabled' : '' ?>>
+                                                            <i class="bi bi-check-circle"></i> Mark as Paid
+                                                        </button>
+                                                    </form>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <?php endwhile; ?>
+                                
                                 </div>
                             <?php else: ?>
                                 <div class="text-center py-4">
