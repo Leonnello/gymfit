@@ -41,7 +41,7 @@ $orderBy = $allowedSort[$sort] ?? "a.date ASC";
 // Update appointment status
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['appointment_id'], $_POST['status'])) {
     $appointment_id = intval($_POST['appointment_id']);
-    $status = ($_POST['status'] === 'accepted') ? 'accepted' : 'cancelled';
+    $status = ($_POST['status'] === 'accepted') ? 'accepted' : (($_POST['status'] === 'completed') ? 'completed' : 'cancelled');
 
     $stmt = $conn->prepare("UPDATE appointments SET status = ? WHERE id = ?");
     $stmt->bind_param("si", $status, $appointment_id);
@@ -145,7 +145,7 @@ while ($row = $result->fetch_assoc()) {
 
     <?php
     // Grouping
-    $groups = ["pending" => [], "accepted" => [], "cancelled" => []];
+    $groups = ["pending" => [], "accepted" => [], "completed" => [], "cancelled" => []];
 
     foreach ($appointments as $appt) {
         $groups[strtolower($appt["status"])][] = $appt;
@@ -165,8 +165,8 @@ while ($row = $result->fetch_assoc()) {
                 <div class="card appointment-card">
                     <div class="card-header d-flex justify-content-between">
                         <span><i class="bi bi-person-circle"></i> <?= $a['firstName'] . " " . $a['lastName'] ?></span>
-                        <span class="badge <?= $a['is_paid'] ? 'badge-paid' : 'badge-unpaid' ?>">
-                            <?= $a['is_paid'] ? "Paid" : "Unpaid" ?>
+                        <span class="badge bg-<?= strtolower($a['status']) === 'accepted' ? 'success' : 'warning' ?>">
+                            <?= ucfirst($a['status']) ?>
                         </span>
                     </div>
 
@@ -174,7 +174,6 @@ while ($row = $result->fetch_assoc()) {
                         <p><i class="bi bi-calendar3 text-danger"></i> <?= date("F j, Y", strtotime($a['date'])) ?></p>
                         <p><i class="bi bi-clock text-danger"></i> <?= formatTimeRange($a['start_time'], $a['end_time']) ?></p>
                         <p><i class="bi bi-heart-pulse text-danger"></i> <?= getTrainingRegimeLabel($a['training_regime']) ?></p>
-                        <p><i class="bi bi-cash text-danger"></i> ₱<?= number_format($a['amount'], 2) ?></p>
 
                         <?php if (!empty($a['notes'])): ?>
                             <p><i class="bi bi-journal-text text-danger"></i> <?= $a['notes'] ?></p>
@@ -191,10 +190,17 @@ while ($row = $result->fetch_assoc()) {
                                     <i class="bi bi-x-circle"></i> Cancel
                                 </button>
                             </form>
+                        <?php elseif (strtolower($a['status']) === 'accepted'): ?>
+                            <form method="POST" class="d-flex gap-2 mt-3">
+                                <input type="hidden" name="appointment_id" value="<?= $a['id'] ?>">
+                                <button name="status" value="completed" class="btn btn-outline-info w-100">
+                                    <i class="bi bi-check2-circle"></i> Mark as Complete
+                                </button>
+                            </form>
                         <?php else: ?>
                             <div class="text-center mt-3">
-                                <span class="status-badge text-<?= strtolower($a['status']) === 'accepted' ? 'success' : 'danger' ?>">
-                                    <i class="bi <?= strtolower($a['status']) === 'accepted' ? 'bi-check-circle-fill' : 'bi-x-circle-fill' ?>"></i>
+                                <span class="status-badge text-<?= strtolower($a['status']) === 'completed' ? 'info' : 'danger' ?>">
+                                    <i class="bi <?= strtolower($a['status']) === 'completed' ? 'bi-check2-circle-fill' : 'bi-x-circle-fill' ?>"></i>
                                     <?= ucfirst($a['status']) ?>
                                 </span>
                             </div>
@@ -210,6 +216,7 @@ while ($row = $result->fetch_assoc()) {
     // Render grouped sections
     renderGroup("Pending Sessions", "warning", $groups["pending"]);
     renderGroup("Accepted Sessions", "success", $groups["accepted"]);
+    renderGroup("Completed Sessions", "info", $groups["completed"]);
     renderGroup("Cancelled Sessions", "danger", $groups["cancelled"]);
     ?>
 
