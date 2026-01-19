@@ -49,9 +49,31 @@ $stmt->bind_param("i", $user_id);
 $stmt->execute();
 $appointments_result = $stmt->get_result();
 
-// Fetch available trainers
+// Function to get trainer capacity (ongoing bookings count)
+function getTrainerBookingCount($trainer_id, $conn) {
+    $stmt = $conn->prepare("SELECT COUNT(*) as count FROM appointments WHERE trainer_id = ? AND status IN ('pending','accepted')");
+    $stmt->bind_param("i", $trainer_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $row = $result->fetch_assoc();
+    return intval($row['count']);
+}
+
+// Fetch available trainers with capacity info
 $trainers_query = "SELECT id, CONCAT(firstName, ' ', lastName) AS name, role FROM users WHERE role IN ('trainer','trainor') ORDER BY firstName";
 $trainers_result = $conn->query($trainers_query);
+
+// Build trainers array with capacity info
+$trainers_with_capacity = [];
+if ($trainers_result && $trainers_result->num_rows > 0) {
+    $trainers_result->data_seek(0);
+    while ($t = $trainers_result->fetch_assoc()) {
+        $booking_count = getTrainerBookingCount($t['id'], $conn);
+        $t['booking_count'] = $booking_count;
+        $t['is_full'] = ($booking_count >= 2);
+        $trainers_with_capacity[] = $t;
+    }
+}
 
 // Fetch equipment list (ASSUMPTION: equipment table)
 $equipment_query = "SELECT id, name, model, status FROM equipment ORDER BY name ASC";
@@ -68,6 +90,8 @@ if ($selected_trainer_id) {
     $selected_trainer_result = $stmt2->get_result();
     if ($selected_trainer_result->num_rows > 0) {
         $selected_trainer = $selected_trainer_result->fetch_assoc();
+        $selected_trainer['booking_count'] = getTrainerBookingCount($selected_trainer_id, $conn);
+        $selected_trainer['is_full'] = ($selected_trainer['booking_count'] >= 2);
     }
 }
 ?>
@@ -118,7 +142,6 @@ if ($selected_trainer_id) {
         .receipt-label { color: #6c757d; font-weight: 500; }
         .receipt-value { color: #333; text-align: right; word-break: break-word; }
         .receipt-total { background: #f8f9fa; padding: 1rem; border-radius: 6px; margin-top: 1rem; border: 2px solid #e9ecef; }
-        .receipt-price { color: #b71c1c; font-size: 1.2rem; }
 
         @media (max-width: 768px) {
             main { margin-left: 0; padding: 1rem; }
@@ -164,18 +187,22 @@ if ($selected_trainer_id) {
                                         <label class="form-label">Trainer</label>
                                         <?php if ($selected_trainer): ?>
                                             <div class="form-control bg-light">
-                                                <strong><?= htmlspecialchars($selected_trainer['name']) ?> (<?= $selected_trainer['role'] ?>)</strong>
+                                                <strong><?= htmlspecialchars($selected_trainer['name']) ?></strong>
+                                                <?php if ($selected_trainer['is_full']): ?>
+                                                    <span class="badge bg-danger ms-2">Full Capacity</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-success ms-2">Available</span>
+                                                <?php endif; ?>
                                             </div>
                                             <input type="hidden" name="trainer_id" value="<?= $selected_trainer['id'] ?>">
                                         <?php else: ?>
-                                            <select name="trainer_id" class="form-select" required>
+                                            <select name="trainer_id" class="form-select" required id="trainerSelect">
                                                 <option value="">Select Trainer</option>
-                                                <?php
-                                                $trainers_result->data_seek(0);
-                                                while ($t = $trainers_result->fetch_assoc()):
-                                                ?>
-                                                    <option value="<?= $t['id'] ?>"><?= htmlspecialchars($t['name']) ?> (<?= $t['role'] ?>)</option>
-                                                <?php endwhile; ?>
+                                                <?php foreach ($trainers_with_capacity as $t): ?>
+                                                    <option value="<?= $t['id'] ?>" data-is-full="<?= $t['is_full'] ? '1' : '0' ?>">
+                                                        <?= htmlspecialchars($t['name']) ?> - <?= $t['is_full'] ? 'Full Capacity' : 'Available' ?>
+                                                    </option>
+                                                <?php endforeach; ?>
                                             </select>
                                         <?php endif; ?>
                                     </div>
@@ -280,43 +307,14 @@ if ($selected_trainer_id) {
                                     </div>
                                 </div>
 
-                                <!-- Price Display -->
-                                <div class="alert alert-info mb-3" id="priceSection" style="display: none;">
-                                    <div class="row mb-3">
-                                        <div class="col-md-3">
-                                            <small class="text-muted">Training Type:</small>
-                                            <div class="h6 text-danger"><span id="regimeType">-</span></div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <small class="text-muted">Base Rate:</small>
-                                            <div class="h6 text-danger"><span id="basePrice">₱0.00</span></div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <small class="text-muted">Duration:</small>
-                                            <div class="h6 text-danger"><span id="duration">0</span> hrs</div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <small class="text-muted">Days:</small>
-                                            <div class="h6 text-danger"><span id="sessionDays">1</span></div>
-                                        </div>
-                                    </div>
-                                    <hr class="my-2">
-                                    <div class="row">
-                                        <div class="col-md-6">
-                                            <small class="text-muted">Cost per Session:</small>
-                                            <div class="h6 text-danger"><span id="pricePerSession">₱0.00</span></div>
-                                        </div>
-                                        <div class="col-md-6 text-end">
-                                            <strong>Total Cost:</strong>
-                                            <h5 class="text-danger mb-0"><span id="totalPrice">₱0.00</span></h5>
-                                        </div>
-                                    </div>
+                                <!-- Validation Error Display -->
+                                <div id="formErrorsContainer" class="alert alert-danger alert-dismissible fade show d-none mb-3" role="alert" style="display: none !important;">
+                                    <i class="bi bi-exclamation-triangle-fill"></i> <span id="formErrorText"></span>
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                                 </div>
 
-                                <input type="hidden" name="amount" id="amountInput" value="0">
-
                                 <div class="d-flex gap-2">
-                                    <button type="submit" class="btn btn-danger px-4">
+                                    <button type="submit" class="btn btn-danger px-4" id="bookSessionBtn" disabled>
                                         <i class="bi bi-save"></i> Book Session
                                     </button>
                                     <?php if ($selected_trainer): ?>
@@ -348,9 +346,7 @@ if ($selected_trainer_id) {
     <th>Time</th>
     <th>Regime</th>
     <th>Duration</th>
-    <th>Amount</th>
     <th>Status</th>
-    <th>Payment</th>
     <th>Created At</th>
     <th>Action</th>
 </tr>
@@ -374,21 +370,26 @@ while ($a = $appointments_result->fetch_assoc()):
     <td><?= date("h:i A", strtotime($a['start_time'])) ?> - <?= date("h:i A", strtotime($a['end_time'])) ?></td>
     <td><?= ucfirst(str_replace('_', ' ', $a['training_regime'])) ?></td>
     <td><?= $a['session_days'] ?? '1' ?> Day(s)</td>
-    <td><strong>₱<?= number_format(floatval($a['amount']), 2) ?></strong></td>
     <td><span class="badge bg-<?= $badgeClass ?>"><?= $statusText ?></span></td>
-    <td><span class="badge bg-<?= $a['is_paid'] ? 'success' : 'danger' ?>"><?= $a['is_paid'] ? 'Paid' : 'Unpaid' ?></span></td>
     <td><?= date("M d, Y h:i A", strtotime($a['created_at'] ?? $a['date'])) ?></td>
     <td>
-        <?php 
-        $canPay = !$a['is_paid'] && !in_array($status, ['completed', 'cancelled', 'declined']);
-        ?>
-        <button type="button" class="btn btn-sm btn-outline-success btn-icon" data-bs-toggle="modal" data-bs-target="#updatePaymentModal<?= $a['id'] ?>" <?= !$canPay ? 'disabled' : '' ?> title="<?= !$canPay ? 'Cannot pay for this session' : 'Pay for this session' ?>">
-            <i class="bi bi-cash-coin"></i>
-        </button>
         <?php if (!in_array($status, ['completed', 'cancelled', 'declined'])): ?>
-            <a href="cancel_session.php?id=<?= $a['id'] ?>" class="btn btn-sm btn-outline-danger btn-icon ms-2">
-                <i class="bi bi-x-circle"></i>
-            </a>
+            <?php if ($status === 'accepted'): ?>
+                <div class="d-flex gap-2 align-items-center">
+                    <a href="cancel_session.php?id=<?= $a['id'] ?>" class="btn btn-sm btn-outline-danger btn-icon" title="Cancel session">
+                        <i class="bi bi-x-circle"></i>
+                    </a>
+                    <small class="text-muted cancel-timer" data-created-at="<?= $a['created_at'] ?? $a['date'] ?>" style="white-space: nowrap;">
+                        <i class="bi bi-hourglass-split"></i> <span class="timer-text">Calculating...</span>
+                    </small>
+                </div>
+            <?php else: ?>
+                <a href="cancel_session.php?id=<?= $a['id'] ?>" class="btn btn-sm btn-outline-danger btn-icon" title="Cancel session">
+                    <i class="bi bi-x-circle"></i>
+                </a>
+            <?php endif; ?>
+        <?php else: ?>
+            <span class="text-muted small">-</span>
         <?php endif; ?>
     </td>
 </tr>
@@ -396,48 +397,6 @@ while ($a = $appointments_result->fetch_assoc()):
 </tbody>
 
                                     </table>
-
-                                    <!-- Payment Modals for each appointment -->
-                                    <?php
-                                    $appointments_result->data_seek(0);
-                                    while ($a = $appointments_result->fetch_assoc()):
-                                    ?>
-                                    <div class="modal fade" id="updatePaymentModal<?= $a['id'] ?>" tabindex="-1" aria-labelledby="updatePaymentLabel<?= $a['id'] ?>" aria-hidden="true">
-                                        <div class="modal-dialog">
-                                            <div class="modal-content">
-                                                <div class="modal-header bg-danger text-white">
-                                                    <h5 class="modal-title" id="updatePaymentLabel<?= $a['id'] ?>">Payment for Session</h5>
-                                                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-                                                </div>
-                                                <div class="modal-body">
-                                                    <p><strong>Trainer:</strong> <?= htmlspecialchars($a['trainer_name']) ?></p>
-                                                    <p><strong>Date:</strong> <?= date("M d, Y", strtotime($a['date'])) ?></p>
-                                                    <p><strong>Time:</strong> <?= date("h:i A", strtotime($a['start_time'])) ?> - <?= date("h:i A", strtotime($a['end_time'])) ?></p>
-                                                    <p><strong>Training Type:</strong> <?= ucfirst(str_replace('_', ' ', $a['training_regime'])) ?></p>
-                                                    <hr>
-                                                    <form action="update_payment.php" method="POST">
-                                                        <input type="hidden" name="appointment_id" value="<?= $a['id'] ?>">
-                                                        <div class="mb-3">
-                                                            <label for="paymentAmount<?= $a['id'] ?>" class="form-label">Amount to Pay</label>
-                                                            <div class="input-group">
-                                                                <span class="input-group-text">₱</span>
-                                                                <input type="number" class="form-control" id="paymentAmount<?= $a['id'] ?>" name="amount" value="<?= floatval($a['amount']) ?>" step="0.01" readonly>
-                                                            </div>
-                                                            <small class="text-muted">Amount is fixed based on your booking</small>
-                                                        </div>
-                                                        <div class="mb-3">
-                                                            <p class="text-muted"><strong>Status:</strong> <span class="badge bg-<?= $a['is_paid'] ? 'success' : 'danger' ?>"><?= $a['is_paid'] ? 'Already Paid' : 'Pending Payment' ?></span></p>
-                                                        </div>
-                                                        <button type="submit" class="btn btn-danger w-100" <?= ($a['is_paid'] || in_array(strtolower($a['status']), ['completed', 'cancelled', 'declined'])) ? 'disabled' : '' ?>>
-                                                            <i class="bi bi-check-circle"></i> Mark as Paid
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <?php endwhile; ?>
-                                
                                 </div>
                             <?php else: ?>
                                 <div class="text-center py-4">
@@ -506,6 +465,15 @@ while ($a = $appointments_result->fetch_assoc()):
 
 <script>
 document.addEventListener("DOMContentLoaded", function () {
+    // Disable book button by default until a trainer is selected
+    const bookButton = document.querySelector('button[type="submit"]');
+    
+    if (bookButton) {
+        bookButton.disabled = true;
+        bookButton.style.opacity = '0.6';
+        bookButton.title = 'Please select a trainer to book a session';
+    }
+    
     // Generate time slots from 7:00 to 20:00 (8:00 PM) in 30-minute intervals
     function generateTimeSlots() {
         const slots = [];
@@ -544,10 +512,10 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // Fetch booked slots via AJAX when trainer or date changes
     const dateInput = document.getElementById('sessionDate');
-    const trainerSelect = document.querySelector('select[name="trainer_id"]');
+    const trainerSelectDropdown = document.querySelector('select[name="trainer_id"]');
 
     (dateInput) && dateInput.addEventListener('change', fetchBookedTimes);
-    (trainerSelect) && trainerSelect.addEventListener('change', fetchBookedTimes);
+    (trainerSelectDropdown) && trainerSelectDropdown.addEventListener('change', fetchBookedTimes);
 
     async function fetchBookedTimes() {
         const trainer_id = getSelectedTrainerId();
@@ -586,58 +554,57 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function renderTimeSlots(containerId, slots, selectedTime = '') {
+        console.log('renderTimeSlots CALLED', { containerId, slotsLength: slots?.length });
         const container = document.getElementById(containerId);
-        if (!container) return;
+        if (!container || !Array.isArray(slots)) return;
+
         container.innerHTML = '';
-        const grid = document.createDocumentFragment();
+        const frag = document.createDocumentFragment();
 
         slots.forEach(slot => {
-            const isBooked = isTimeBooked(slot.value);
+            const isBooked =
+                typeof isTimeBooked === 'function'
+                    ? isTimeBooked(slot.value)
+                    : false;
+
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = 'time-slot-btn' + (selectedTime === slot.value ? ' selected' : '');
+            btn.className = 'time-slot-btn';
             btn.textContent = slot.display;
             btn.dataset.time = slot.value;
             btn.disabled = isBooked;
 
-            if (isBooked) {
-                btn.style.background = '#f1f1f1';
-                btn.style.color = '#888';
-                btn.style.borderColor = '#ddd';
-                btn.title = 'Booked';
+            if (slot.value === selectedTime) {
+                btn.classList.add('selected');
+                btn.style.background = '#b71c1c';
+                btn.style.color = '#fff';
+                btn.style.borderColor = '#b71c1c';
             }
 
-            btn.addEventListener('click', function () {
+            btn.addEventListener('click', () => {
                 if (btn.disabled) return;
-                // deselect siblings
-                container.querySelectorAll('.time-slot-btn').forEach(b => b.classList.remove('selected'));
+
+                container.querySelectorAll('.time-slot-btn')
+                    .forEach(b => b.classList.remove('selected'));
+
                 btn.classList.add('selected');
 
                 if (containerId === 'startTimeSlots') {
-                    document.getElementById('selectedStartTime').value = slot.value;
-                    document.getElementById('startTimeDisplay').textContent = 'Selected: ' + slot.display;
-                    document.getElementById('startTimeDisplay').className = 'time-input-feedback text-success';
+                    selectedStartTime.value = slot.value;
+                    startTimeDisplay.textContent = `Selected: ${slot.display}`;
                     updateEndTimeSlots(slot.value);
-                    // Clear end time and price when start time changes
-                    document.getElementById('selectedEndTime').value = '';
-                    document.getElementById('endTimeDisplay').textContent = 'No time selected';
-                    document.getElementById('endTimeDisplay').className = 'time-input-feedback text-muted';
-                    // Trigger price calculation after a small delay
-                    setTimeout(calculatePrice, 100);
                 } else {
-                    document.getElementById('selectedEndTime').value = slot.value;
-                    document.getElementById('endTimeDisplay').textContent = 'Selected: ' + slot.display;
-                    document.getElementById('endTimeDisplay').className = 'time-input-feedback text-success';
-                    // Trigger price calculation when end time is selected
-                    calculatePrice();
+                    selectedEndTime.value = slot.value;
+                    endTimeDisplay.textContent = `Selected: ${slot.display}`;
                 }
             });
 
-            grid.appendChild(btn);
+            frag.appendChild(btn);
         });
 
-        container.appendChild(grid);
+        container.appendChild(frag);
     }
+
 
     function updateEndTimeSlots(startTimeValue) {
         // startTimeValue is "HH:MM:SS"
@@ -675,11 +642,20 @@ document.addEventListener("DOMContentLoaded", function () {
             btn.textContent = slot.display;
             btn.dataset.time = slot.value;
             btn.disabled = isInvalid;
+            
+            // Add inline styles
+            btn.style.padding = '8px 12px';
+            btn.style.border = '2px solid #e9ecef';
+            btn.style.borderRadius = '6px';
+            btn.style.background = isInvalid ? '#f1f1f1' : 'white';
+            btn.style.color = isInvalid ? '#888' : '#495057';
+            btn.style.fontSize = '0.85rem';
+            btn.style.fontWeight = '500';
+            btn.style.cursor = isInvalid ? 'not-allowed' : 'pointer';
+            btn.style.transition = 'all 0.2s ease';
+            btn.style.textAlign = 'center';
 
             if (isInvalid) {
-                btn.style.background = '#f1f1f1';
-                btn.style.color = '#888';
-                btn.style.borderColor = '#ddd';
                 btn.title = 'Conflicts with existing booking';
             }
 
@@ -688,18 +664,35 @@ document.addEventListener("DOMContentLoaded", function () {
                 // deselect siblings
                 container.querySelectorAll('.time-slot-btn').forEach(b => b.classList.remove('selected'));
                 btn.classList.add('selected');
+                btn.style.background = '#b71c1c';
+                btn.style.color = 'white';
+                btn.style.borderColor = '#b71c1c';
 
                 document.getElementById('selectedEndTime').value = slot.value;
                 document.getElementById('endTimeDisplay').textContent = 'Selected: ' + slot.display;
                 document.getElementById('endTimeDisplay').className = 'time-input-feedback text-success';
                 
-                // Calculate price when end time is selected
-                calculatePrice();
+            });
+            
+            btn.addEventListener('mouseenter', function() {
+                if (!btn.disabled) {
+                    btn.style.borderColor = '#b71c1c';
+                    btn.style.background = '#fff5f5';
+                    btn.style.color = '#b71c1c';
+                }
+            });
+            
+            btn.addEventListener('mouseleave', function() {
+                if (!btn.disabled && !btn.classList.contains('selected')) {
+                    btn.style.borderColor = '#e9ecef';
+                    btn.style.background = 'white';
+                    btn.style.color = '#495057';
+                }
             });
 
+            //container.appendChild(btn);
             frag.appendChild(btn);
         });
-
         container.appendChild(frag);
         document.getElementById('endTimeHelp').textContent = 'Available end times (must be after start)';
         document.getElementById('selectedEndTime').value = '';
@@ -710,168 +703,84 @@ document.addEventListener("DOMContentLoaded", function () {
     // Initialize start time slots (no trainer/date selected yet => all enabled visually)
     renderTimeSlots('startTimeSlots', timeSlots);
 
-    // Calculate price when trainer, start time, or end time changes
-    async function calculatePrice() {
-        const trainer_id = getSelectedTrainerId();
-        const start_time = document.getElementById('selectedStartTime').value;
-        const end_time = document.getElementById('selectedEndTime').value;
-        const training_regime = document.querySelector('select[name="training_regime"]').value;
-        const session_days = document.querySelector('select[name="session_days"]').value;
-        const priceSection = document.getElementById('priceSection');
-
-        // Check if all required fields are filled
-        if (!trainer_id || !start_time || !end_time || !training_regime || !session_days) {
-            // Show "Form incomplete" message
-            priceSection.innerHTML = `
-                <div class="alert alert-warning mb-0">
-                    <i class="bi bi-exclamation-triangle"></i> 
-                    <strong>Form Incomplete</strong> - Please fill in all required fields to see pricing
-                </div>
-            `;
-            priceSection.style.display = 'block';
-            document.getElementById('amountInput').value = '0';
-            return;
-        }
-
-        try {
-            const formData = new FormData();
-            formData.append('training_regime', training_regime);
-            formData.append('start_time', start_time);
-            formData.append('end_time', end_time);
-            formData.append('session_days', session_days);
-
-            console.log('Sending to calculate_price.php:', {training_regime, start_time, end_time, session_days});
-
-            const response = await fetch('ajax/calculate_price.php', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to calculate price`);
-            const data = await response.json();
-
-            console.log('Response from calculate_price.php:', data);
-
-            // Check if there was an error in the response
-            if (data.error) {
-                const errorMsg = data.error;
-                priceSection.innerHTML = `
-                    <div class="alert alert-danger mb-0 d-flex align-items-center gap-2">
-                        <i class="bi bi-exclamation-circle-fill" data-bs-toggle="tooltip" data-bs-title="${errorMsg}"></i>
-                        <span>Error calculating price</span>
-                    </div>
-                `;
-                priceSection.style.display = 'block';
-                // Initialize tooltip for this new element
-                const tooltipElement = priceSection.querySelector('[data-bs-toggle="tooltip"]');
-                if (tooltipElement && typeof bootstrap !== 'undefined') {
-                    new bootstrap.Tooltip(tooltipElement);
-                }
-                document.getElementById('amountInput').value = '0';
-                return;
-            }
-
-            if (data.success) {
-                const regimeNames = {
-                    'full_body': 'Full Body',
-                    'upper_body': 'Upper Body',
-                    'lower_body': 'Lower Body',
-                    'cardio': 'Cardio',
-                    'strength': 'Strength',
-                    'flexibility': 'Flexibility',
-                    'hiit': 'HIIT',
-                    'recovery': 'Recovery'
-                };
-
-                const priceHTML = `
-                    <div class="row mb-3">
-                        <div class="col-md-3">
-                            <small class="text-muted">Training Type:</small>
-                            <div class="h6 text-danger"><span id="regimeType">${regimeNames[data.regime] || data.regime}</span></div>
-                        </div>
-                        <div class="col-md-3">
-                            <small class="text-muted">Base Rate:</small>
-                            <div class="h6 text-danger"><span id="basePrice">₱${parseFloat(data.base_price).toFixed(2)}</span></div>
-                        </div>
-                        <div class="col-md-3">
-                            <small class="text-muted">Duration:</small>
-                            <div class="h6 text-danger"><span id="duration">${data.duration.toFixed(1)}</span> hrs</div>
-                        </div>
-                        <div class="col-md-3">
-                            <small class="text-muted">Days:</small>
-                            <div class="h6 text-danger"><span id="sessionDays">${data.session_days}</span></div>
-                        </div>
-                    </div>
-                    <hr class="my-2">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <small class="text-muted">Cost per Session:</small>
-                            <div class="h6 text-danger"><span id="pricePerSession">₱${parseFloat(data.price_per_session).toFixed(2)}</span></div>
-                        </div>
-                        <div class="col-md-6 text-end">
-                            <strong>Total Cost:</strong>
-                            <h5 class="text-danger mb-0"><span id="totalPrice">${data.formatted_price}</span></h5>
-                        </div>
-                    </div>
-                `;
-
-                priceSection.innerHTML = priceHTML;
-                document.getElementById('amountInput').value = data.total_price;
-                priceSection.style.display = 'block';
-            } else {
-                throw new Error('Invalid response from server');
-            }
-        } catch (err) {
-            console.error('Price calculation error:', err);
-            const errorMsg = err.message;
-            priceSection.innerHTML = `
-                <div class="alert alert-danger mb-0 d-flex align-items-center gap-2">
-                    <i class="bi bi-exclamation-circle-fill" data-bs-toggle="tooltip" data-bs-title="${errorMsg}"></i>
-                    <span>Error calculating price</span>
-                </div>
-            `;
-            priceSection.style.display = 'block';
-            // Initialize tooltip for this new element
-            const tooltipElement = priceSection.querySelector('[data-bs-toggle="tooltip"]');
-            if (tooltipElement && typeof bootstrap !== 'undefined') {
-                new bootstrap.Tooltip(tooltipElement);
-            }
-            document.getElementById('amountInput').value = '0';
-        }
-    }
-
     // Listen to changes on start/end times and trainer
     document.addEventListener('DOMContentLoaded', function() {
         // This is already in DOMContentLoaded, so we can use event delegation
     });
 
-    // Add event listeners for price calculation
-    const originalRenderTimeSlots = renderTimeSlots;
-    const startTimeContainer = document.getElementById('startTimeSlots');
-    const endTimeContainer = document.getElementById('endTimeSlots');
+    // === FORM VALIDATION HELPER ===
+    function validateForm() {
+        const trainerHidden = document.querySelector('input[name="trainer_id"][type="hidden"]');
+        const trainerSelect = document.querySelector('select[name="trainer_id"]');
+        const date = document.querySelector('input[name="date"]').value;
+        const startTime = document.getElementById('selectedStartTime').value;
+        const endTime = document.getElementById('selectedEndTime').value;
+        const regime = document.querySelector('select[name="training_regime"]').value;
+        const equipment = document.querySelector('select[name="equipment_id"]').value;
+        const sessionDays = document.querySelector('select[name="session_days"]').value;
+        
+        const errors = [];
+        
+        // Check trainer
+        const trainer = trainerSelect ? trainerSelect.value : (trainerHidden ? trainerHidden.value : '');
+        if (!trainer) errors.push('Please select a trainer');
+        
+        // Check date
+        if (!date) errors.push('Please select a date');
+        
+        // Check times
+        if (!startTime) errors.push('Please select a start time');
+        if (!endTime) errors.push('Please select an end time');
+        
+        // Check regime
+        if (!regime) errors.push('Please select a training regime');
+        
+        // Check equipment
+        if (!equipment) errors.push('Please select equipment');
+        
+        // Check duration
+        if (!sessionDays) errors.push('Please select session duration');
+        
+        return { isValid: errors.length === 0, errors };
+    }
 
-    // Override the renderTimeSlots function to add event listeners
-    window.calculatePriceOnChange = calculatePrice;
-
-    // Listen for changes
-    document.addEventListener('change', function(e) {
-        if (e.target.name === 'trainer_id') {
-            setTimeout(calculatePrice, 500);
+    // === UPDATE BUTTON STATE BASED ON FORM VALIDITY ===
+    function updateButtonState() {
+        const bookBtn = document.getElementById('bookSessionBtn');
+        const errorContainer = document.getElementById('formErrorsContainer');
+        const errorText = document.getElementById('formErrorText');
+        
+        const validation = validateForm();
+        
+        if (validation.isValid) {
+            bookBtn.disabled = false;
+            bookBtn.style.opacity = '1';
+            errorContainer.classList.add('d-none');
+            errorContainer.style.display = 'none';
+        } else {
+            bookBtn.disabled = true;
+            bookBtn.style.opacity = '0.6';
+            errorText.innerHTML = '<strong>Complete the form:</strong><ul class="mb-0 mt-2">' + 
+                validation.errors.map(e => `<li>${e}</li>`).join('') + 
+                '</ul>';
+            errorContainer.classList.remove('d-none');
+            errorContainer.style.display = 'block !important';
         }
-        if (e.target.name === 'training_regime' || e.target.name === 'session_days') {
-            setTimeout(calculatePrice, 100);
-        }
-    });
+    }
 
-    // Modify the start time click handler to recalculate
-    const originalStartClick = function() {
-        setTimeout(calculatePrice, 100);
-    };
-
-    // For end time selection
-    const originalEndClick = function() {
-        setTimeout(calculatePrice, 100);
-    };
+    // === ADD EVENT LISTENERS FOR FORM FIELD CHANGES ===
+    const trainerSelectElement = document.getElementById('trainerSelect');
+    const dateInputField = document.querySelector('input[name="date"]');
+    const regimeSelect = document.querySelector('select[name="training_regime"]');
+    const equipmentSelect = document.querySelector('select[name="equipment_id"]');
+    const sessionDaysSelect = document.querySelector('select[name="session_days"]');
+    
+    // Add change listeners to update button state
+    if (trainerSelectElement) trainerSelectElement.addEventListener('change', updateButtonState);
+    if (dateInputField) dateInputField.addEventListener('change', updateButtonState);
+    if (regimeSelect) regimeSelect.addEventListener('change', updateButtonState);
+    if (equipmentSelect) equipmentSelect.addEventListener('change', updateButtonState);
+    if (sessionDaysSelect) sessionDaysSelect.addEventListener('change', updateButtonState);
 
     // Form validation: ensure start and end are set and end > start
     // Show confirmation modal before submission
@@ -881,11 +790,28 @@ document.addEventListener("DOMContentLoaded", function () {
             console.log('Book form submitted!');
             e.preventDefault();
             
+            // Validate form
+            const validation = validateForm();
+            if (!validation.isValid) {
+                updateButtonState();
+                return;
+            }
+            
             const start = document.getElementById('selectedStartTime').value;
             const end = document.getElementById('selectedEndTime').value;
+                        console.log('Start time:', start, 'End time:', end);
             
             console.log('Start time:', start, 'End time:', end);
             
+            if (!start) {
+                Swal.fire({ icon: 'error', title: 'Missing Start Time', text: 'Please select a start time for your session', confirmButtonColor: '#b71c1c' });
+                return;
+            }
+            if (!end) {
+                Swal.fire({ icon: 'error', title: 'Missing End Time', text: 'Please select an end time for your session', confirmButtonColor: '#b71c1c' });
+                return;
+            }
+
             if (!start) {
                 Swal.fire({ icon: 'error', title: 'Missing Start Time', text: 'Please select a start time for your session', confirmButtonColor: '#b71c1c' });
                 return;
@@ -906,23 +832,61 @@ document.addEventListener("DOMContentLoaded", function () {
         console.error('Booking form not found!');
     }
 
+    // Handle trainer selection change to show capacity status
+    const trainerSelect = document.getElementById('trainerSelect');
+    if (trainerSelect) {
+        trainerSelect.addEventListener('change', function() {
+            const selectedOption = this.options[this.selectedIndex];
+            const isFull = selectedOption.dataset.isFull === '1';
+            
+            if (isFull) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Trainer Full',
+                    text: 'This trainer has reached full capacity (2 ongoing bookings). Please select another trainer.',
+                    confirmButtonColor: '#b71c1c'
+                });
+            }
+            updateButtonState();
+        });
+        
+        // Initial state check
+        updateButtonState();
+    }
+
     // Show booking confirmation modal
     function showBookingConfirmation() {
         console.log('showBookingConfirmation called');
         
-        // Get trainer info (could be hidden input or select)
+        // Check trainer capacity first
         const trainerHidden = document.querySelector('input[name="trainer_id"][type="hidden"]');
         const trainerSelect = document.querySelector('select[name="trainer_id"]');
         
         let trainerId = '';
         let trainerName = '';
+        let isFull = false;
         
         if (trainerHidden) {
             trainerId = trainerHidden.value;
             trainerName = trainerHidden.parentElement.querySelector('strong')?.textContent || 'Selected Trainer';
+            const fullBadge = trainerHidden.parentElement.querySelector('.badge.bg-danger');
+            isFull = fullBadge !== null;
         } else if (trainerSelect) {
             trainerId = trainerSelect.value;
-            trainerName = trainerSelect.options[trainerSelect.selectedIndex].text;
+            const selectedOption = trainerSelect.options[trainerSelect.selectedIndex];
+            trainerName = selectedOption.text;
+            isFull = selectedOption.dataset.isFull === '1';
+        }
+        
+        // Prevent booking if trainer is at full capacity
+        if (isFull) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Cannot Book',
+                text: 'This trainer has reached full capacity (2 ongoing bookings). Please select another trainer.',
+                confirmButtonColor: '#b71c1c'
+            });
+            return;
         }
         
         const date = document.querySelector('input[name="date"]').value;
@@ -930,10 +894,9 @@ document.addEventListener("DOMContentLoaded", function () {
         const endTime = document.getElementById('selectedEndTime').value;
         const regime = document.querySelector('select[name="training_regime"]').value;
         const sessionDays = document.querySelector('select[name="session_days"]').value;
-        const totalPrice = document.getElementById('totalPrice').textContent;
         const notes = document.querySelector('textarea[name="notes"]').value;
 
-        console.log({trainerId, trainerName, date, startTime, endTime, regime, sessionDays, totalPrice});
+        console.log({trainerId, trainerName, date, startTime, endTime, regime, sessionDays});
         
         // Calculate duration for display
         const start = new Date(`2000-01-01 ${startTime}`);
@@ -957,7 +920,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const confirmHtml = `
             <div class="receipt-container">
                 <div class="receipt-header text-center mb-4">
-                    <h5 class="mb-0"><i class="bi bi-receipt"></i> Booking Receipt</h5>
+                    <h5 class="mb-0"><i class="bi bi-receipt"></i> Booking Confirmation</h5>
                     <small class="text-muted">Please review your booking details</small>
                 </div>
                 <div class="receipt-details">
@@ -989,11 +952,6 @@ document.addEventListener("DOMContentLoaded", function () {
                         <span class="receipt-label">Notes:</span>
                         <span class="receipt-value"><em>${notes}</em></span>
                     </div>` : ''}
-                    <hr class="my-3">
-                    <div class="receipt-row receipt-total">
-                        <span class="receipt-label"><strong>Total Cost:</strong></span>
-                        <span class="receipt-value receipt-price"><strong>${totalPrice}</strong></span>
-                    </div>
                 </div>
             </div>
         `;
@@ -1037,8 +995,51 @@ document.addEventListener("DOMContentLoaded", function () {
         fetchBookedTimes();
     }
     
-    // Trigger price calculation on page load if all fields are available
-    setTimeout(calculatePrice, 500);
+
+    // === CANCELLATION TIMER FOR ACCEPTED SESSIONS (2-HOUR LIMIT) ===
+    function updateCancellationTimers() {
+        const timers = document.querySelectorAll('.cancel-timer');
+        timers.forEach(timer => {
+            const createdAt = new Date(timer.dataset.createdAt);
+            const now = new Date();
+            const elapsedMs = now - createdAt;
+            const totalMs = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+            const remainingMs = totalMs - elapsedMs;
+            
+            const cancelBtn = timer.closest('td').querySelector('a[href*="cancel_session"]');
+            
+            if (remainingMs <= 0) {
+                // 2 hours have passed, disable cancel button
+                cancelBtn.style.pointerEvents = 'none';
+                cancelBtn.style.opacity = '0.5';
+                cancelBtn.title = 'Cancellation window has expired (2 hours max)';
+                timer.querySelector('.timer-text').textContent = 'Expired';
+                timer.style.color = '#dc3545';
+            } else {
+                // Calculate remaining time
+                const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+                const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+                const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
+                
+                // Format display
+                let timeStr = '';
+                if (hours > 0) {
+                    timeStr = `${hours}h ${minutes}m left`;
+                } else if (minutes > 0) {
+                    timeStr = `${minutes}m ${seconds}s left`;
+                } else {
+                    timeStr = `${seconds}s left`;
+                }
+                
+                timer.querySelector('.timer-text').textContent = timeStr;
+                timer.style.color = remainingMs < 15 * 60 * 1000 ? '#dc3545' : '#6c757d'; // Red if less than 15 mins
+            }
+        });
+    }
+    
+    // Update timers immediately and every second
+    updateCancellationTimers();
+    setInterval(updateCancellationTimers, 1000);
 });
 </script>
 

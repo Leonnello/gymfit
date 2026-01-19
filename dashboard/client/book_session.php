@@ -39,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   }
 
   $stmt->bind_param(
-    "iisssss",
+    "iisssssi",
     $user_id,
     $trainer_id,
     $date,
